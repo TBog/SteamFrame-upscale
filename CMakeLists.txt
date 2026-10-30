@@ -33,3 +33,41 @@ if(Vulkan_FOUND AND OPENXR_INCLUDE_DIR AND GLSLANG)
 else()
   message(STATUS "Vulkan/OpenXR/glslang not found: skipping steamframe_layer")
 endif()
+
+# `make install` mirrors get.sh: user-local, no root needed (SteamOS-safe).
+# Override with -DSF_INSTALL_HOME=<dir>; defaults to $HOME.
+if(TARGET steamframe_layer)
+  if(DEFINED ENV{HOME})
+    set(_sf_home "$ENV{HOME}")
+  endif()
+  if(SF_INSTALL_HOME)
+    set(_sf_home "${SF_INSTALL_HOME}")
+  endif()
+  set(SF_LIB_DIR "${_sf_home}/.local/lib/openxr")
+  install(TARGETS steamframe_layer LIBRARY DESTINATION "${SF_LIB_DIR}")
+  file(WRITE ${CMAKE_BINARY_DIR}/steamframe_passthrough.json
+"{
+  \"file_format_version\": \"1.0.0\",
+  \"api_layer\": {
+    \"name\": \"XR_APILAYER_STEAMFRAME_passthrough_denoise\",
+    \"library_path\": \"${SF_LIB_DIR}/libsteamframe_layer.so\",
+    \"api_version\": \"1.0\",
+    \"implementation_version\": \"1\",
+    \"description\": \"Temporal denoise + CAS for monochrome passthrough\",
+    \"functions\": {
+      \"xrNegotiateLoaderApiLayerInterface\": \"xrNegotiateLoaderApiLayerInterface\"
+    },
+    \"disable_environment\": \"DISABLE_XR_APILAYER_STEAMFRAME_passthrough_denoise\",
+    \"enable_environment\": \"ENABLE_XR_APILAYER_STEAMFRAME_passthrough_denoise\"
+  }
+}
+")
+  install(FILES ${CMAKE_BINARY_DIR}/steamframe_passthrough.json
+          DESTINATION "${_sf_home}/.local/share/openxr/1/api_layers/implicit.d")
+  # Keep an existing user config untouched.
+  install(CODE "
+    set(_cfg \"${_sf_home}/.config/steamframe-passthrough/config.ini\")
+    if(NOT EXISTS \"\${_cfg}\")
+      file(INSTALL \"${CMAKE_SOURCE_DIR}/config.ini\" DESTINATION \"${_sf_home}/.config/steamframe-passthrough\")
+    endif()")
+endif()
