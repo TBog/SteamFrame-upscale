@@ -12,3 +12,5 @@ Build (Linux): `apt install libvulkan-dev libopenxr-dev glslang-tools`, then `cm
 Runtime knobs: `SF_CONFIG=<path to config.ini>` (reloaded live), `SF_PROFILE=1` prints GPU ms per 300 frames and flags >2 ms.
 
 Status: the layer compiles and exports the negotiation entry point, but has not been run against a real runtime/GPU, so the shader, barriers and the 2 ms budget are unverified. It requires the `shaderStorageImageExtendedFormats` device feature and submits on the app's queue (the app must not submit on it concurrently from another thread during `xrReleaseSwapchainImage`).
+
+Install (user-local, survives SteamOS updates): `curl -fsSL https://tbog.github.io/SteamFrame-upscale/get.sh | bash`; remove with `... | bash -s -- --uninstall`. From a local build, `cmake --install build` does the same. Set `SF_PROFILE=1` for timing logs.
