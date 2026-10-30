@@ -7,10 +7,12 @@
 #include <openxr/openxr_platform.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <thread>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -18,7 +20,14 @@
 
 #include "denoise.hpp"
 #include "denoise_spv.h"
+#include "ipc.hpp"
 #include "loader_interfaces.h"
+
+#include <poll.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/un.h>
+#include <unistd.h>
 
 #define SF_EXPORT extern "C" __attribute__((visibility("default")))
 static const char* kLayerName = "XR_APILAYER_STEAMFRAME_passthrough_denoise";
@@ -108,16 +117,76 @@ std::string g_cfgPath;
 std::filesystem::file_time_type g_cfgTime{};
 uint32_t g_frame = 0;
 bool g_profile = false;
+std::atomic<bool> g_bypassFilter{false};  // true = raw passthrough, no compute dispatch
+std::atomic<double> g_gpuMs{0.0};         // smoothed GPU time per processed frame
+std::atomic<bool> g_ipcStop{false};
+std::thread g_ipcThread;
+int g_ipcFd = -1;
+
+// UNIX socket server: one command line per connection, one reply line. Last layer instance to start owns the path.
+void ipcServe() {
+    while (!g_ipcStop) {
+        pollfd p{g_ipcFd, POLLIN, 0};
+        if (poll(&p, 1, 200) <= 0) continue;
+        int c = accept(g_ipcFd, nullptr, nullptr);
+        if (c < 0) continue;
+        timeval tv{0, 200000};
+        setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+        char buf[256];
+        ssize_t n = read(c, buf, sizeof buf - 1);
+        if (n > 0) {
+            buf[n] = 0;
+            std::string reply;
+            {
+                std::lock_guard<std::mutex> lk(g_mutex);
+                reply = sf::handleCommand(buf, g_cfg, g_bypassFilter, g_gpuMs.load()) + "\n";
+            }
+            ssize_t w = write(c, reply.data(), reply.size());
+            (void)w;
+        }
+        close(c);
+    }
+}
+
+void startIpc() {
+    if (g_ipcThread.joinable()) return;
+    std::string path = sf::socketPath();
+    sockaddr_un a{};
+    a.sun_family = AF_UNIX;
+    if (path.size() >= sizeof a.sun_path) return;
+    std::strcpy(a.sun_path, path.c_str());
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return;
+    unlink(path.c_str());
+    if (bind(fd, reinterpret_cast<sockaddr*>(&a), sizeof a) != 0 || listen(fd, 4) != 0) {
+        close(fd);
+        return;
+    }
+    chmod(path.c_str(), 0600);
+    g_ipcFd = fd;
+    g_ipcStop = false;
+    g_ipcThread = std::thread(ipcServe);
+}
+
+void stopIpc() {
+    if (!g_ipcThread.joinable()) return;
+    g_ipcStop = true;
+    g_ipcThread.join();
+    close(g_ipcFd);
+    g_ipcFd = -1;
+    unlink(sf::socketPath().c_str());
+}
 
 void loadConfig() {
     if (const char* e = std::getenv("SF_CONFIG")) g_cfgPath = e;
     else if (std::filesystem::exists("config.ini")) g_cfgPath = "config.ini";
-    else if (const char* h = std::getenv("HOME")) g_cfgPath = std::string(h) + "/.config/steamframe/config.ini";
+    else if (const char* h = std::getenv("HOME")) g_cfgPath = std::string(h) + "/.config/steamframe-passthrough/config.ini";
     g_profile = std::getenv("SF_PROFILE") != nullptr;
     std::error_code ec;
     if (!g_cfgPath.empty() && std::filesystem::exists(g_cfgPath, ec)) {
         g_cfg = sf::Config::load(g_cfgPath);
         g_cfgTime = std::filesystem::last_write_time(g_cfgPath, ec);
+        g_bypassFilter = g_cfg.enabled < 0.5f;
     }
 }
 
@@ -129,6 +198,7 @@ void maybeReloadConfig() {
     if (!ec && t != g_cfgTime) {
         g_cfg = sf::Config::load(g_cfgPath);
         g_cfgTime = t;
+        g_bypassFilter = g_cfg.enabled < 0.5f;
     }
 }
 
@@ -342,6 +412,7 @@ void collectTimestamps(SwapchainCtx& w, ImageRes& im) {
         VK_SUCCESS)
         return;
     double ms = double(t[1] - t[0]) * w.sc->tsPeriod * 1e-6;
+    g_gpuMs = g_gpuMs.load() * 0.95 + ms * 0.05;
     w.gpuMsSum += ms;
     ++w.gpuMsCount;
     w.gpuMsMax = std::max(w.gpuMsMax, ms);
@@ -568,6 +639,14 @@ XRAPI_ATTR XrResult XRAPI_CALL hReleaseSwapchainImage(XrSwapchain sw, const XrSw
     if (w && idx < w->images.size()) {
         ImageRes& im = w->images[idx];
         SessionCtx& s = *w->sc;
+        if (g_bypassFilter) {  // raw passthrough: no dispatch; just drain any earlier in-flight work
+            if (im.submitted) {
+                vkWaitForFences(s.device, 1, &im.fence, VK_TRUE, UINT64_MAX);
+                vkResetFences(s.device, 1, &im.fence);
+                im.submitted = false;
+            }
+            return g_next.ReleaseSwapchainImage(sw, ri);
+        }
         if (im.submitted) {
             vkWaitForFences(s.device, 1, &im.fence, VK_TRUE, UINT64_MAX);
             vkResetFences(s.device, 1, &im.fence);
@@ -593,6 +672,7 @@ XRAPI_ATTR XrResult XRAPI_CALL hDestroyInstance(XrInstance inst) {
         g_swapchains.clear();
         g_sessions.clear();
     }
+    stopIpc();
     for (auto& w : sw) freeSwapchain(w);
     for (auto& s : ss)
         if (s->device) {
@@ -638,6 +718,7 @@ XRAPI_ATTR XrResult XRAPI_CALL hCreateApiLayerInstance(const XrInstanceCreateInf
     LOAD(ReleaseSwapchainImage);
 #undef LOAD
     loadConfig();
+    startIpc();
     return XR_SUCCESS;
 }
 

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=SteamFrame Passthrough
+Comment=Toggle and tune the SteamFrame passthrough denoise layer
+Exec=steamframe-gui
+Icon=preferences-desktop-display
+Terminal=false
+Categories=Utility;Settings;
