@@ -1,10 +1,11 @@
 #version 450
-// GPU port of sf::Pipeline::process (two dispatches per eye are not needed:
-// temporal result is written to the history image, CAS reads it after a barrier).
+// GPU port of sf::Pipeline::process. Two dispatches per eye/layer with a barrier between them:
+// pass 0 writes the temporal result to uNext, pass 1 reads it (bound as uHistory) and writes uOutput.
+// Swapchain images are R8; history images are R16F to avoid accumulation quantization.
 layout(local_size_x = 8, local_size_y = 8) in;
 layout(binding = 0, r8) uniform readonly image2D uInput;
-layout(binding = 1, r8) uniform readonly image2D uHistory;   // ping
-layout(binding = 2, r8) uniform writeonly image2D uNext;     // pong
+layout(binding = 1, r16f) uniform readonly image2D uHistory;   // ping
+layout(binding = 2, r16f) uniform writeonly image2D uNext;     // pong
 layout(binding = 3, r8) uniform writeonly image2D uOutput;
 layout(push_constant) uniform P {
     float temporalAlpha, motionThreshold, sharpnessWeight, noiseFloor;
@@ -12,25 +13,23 @@ layout(push_constant) uniform P {
     int hasHistory;
 } p;
 
-float ld(readonly image2D im, ivec2 c) {
-    return imageLoad(im, clamp(c, ivec2(0), imageSize(im) - 1)).r;
-}
+#define LD(im, c) imageLoad(im, clamp((c), ivec2(0), imageSize(im) - 1)).r
 
 void main() {
     ivec2 c = ivec2(gl_GlobalInvocationID.xy);
     if (any(greaterThanEqual(c, imageSize(uInput)))) return;
     if (p.pass == 0) {
-        float cur = ld(uInput, c), v = cur;
+        float cur = LD(uInput, c), v = cur;
         if (p.hasHistory != 0) {
-            float h = ld(uHistory, c);
+            float h = LD(uHistory, c);
             float m = smoothstep(p.motionThreshold, 2.0 * p.motionThreshold, abs(cur - h));
             v = mix(h, cur, mix(p.temporalAlpha, 1.0, m));
         }
         imageStore(uNext, c, vec4(v));
     } else {
         // uHistory is bound to the freshly written temporal image for this pass
-        float cc = ld(uHistory, c), n = ld(uHistory, c + ivec2(0, -1)), s = ld(uHistory, c + ivec2(0, 1));
-        float w = ld(uHistory, c + ivec2(-1, 0)), e = ld(uHistory, c + ivec2(1, 0));
+        float cc = LD(uHistory, c), n = LD(uHistory, c + ivec2(0, -1)), s = LD(uHistory, c + ivec2(0, 1));
+        float w = LD(uHistory, c + ivec2(-1, 0)), e = LD(uHistory, c + ivec2(1, 0));
         float mn = min(min(min(cc, n), min(s, w)), e), mx = max(max(max(cc, n), max(s, w)), e);
         float r = cc;
         if (mx > 1e-5) {

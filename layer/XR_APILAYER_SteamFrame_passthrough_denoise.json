@@ -5,6 +5,9 @@
     "library_path": "./libsteamframe_layer.so",
     "api_version": "1.0",
     "implementation_version": "1",
-    "description": "Temporal denoise + CAS for monochrome passthrough"
+    "description": "Temporal denoise + CAS for monochrome passthrough",
+    "functions": {
+      "xrNegotiateLoaderApiLayerInterface": "xrNegotiateLoaderApiLayerInterface"
+    }
   }
 }
