@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.10)
+project(SteamFrameDenoise CXX)
+set(CMAKE_CXX_STANDARD 17)
+include_directories(include)
+enable_testing()
+add_executable(test_pipeline tests/test_pipeline.cpp)
+add_test(NAME pipeline COMMAND test_pipeline)
