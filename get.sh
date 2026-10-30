@@ -15,6 +15,10 @@ MANIFEST_DIR="$HOME/.local/share/openxr/1/api_layers/implicit.d"
 CONFIG_DIR="$HOME/.config/steamframe-passthrough"
 LIB_NAME="libsteamframe_layer.so"
 MANIFEST_NAME="steamframe_passthrough.json"
+BIN_DIR="$HOME/.local/bin"
+APP_DIR="$HOME/.local/share/applications"
+GUI_NAME="steamframe-gui"
+DESKTOP_NAME="steamframe-gui.desktop"
 
 if [ -t 1 ]; then
   R=$'\033[31m'; G=$'\033[32m'; Y=$'\033[33m'; B=$'\033[34m'; N=$'\033[0m'
@@ -30,7 +34,8 @@ case "${1:-}" in
   --uninstall|--remove)
     info "Removing SteamFrame passthrough layer"
     rm -f "$MANIFEST_DIR/$MANIFEST_NAME" "$LIB_DIR/$LIB_NAME"
-    ok "Removed manifest and library"
+    rm -f "$BIN_DIR/$GUI_NAME" "$APP_DIR/$DESKTOP_NAME"
+    ok "Removed manifest, library and GUI"
     if [ -d "$CONFIG_DIR" ]; then
       warn "Config kept at $CONFIG_DIR (delete it manually if unwanted)"
     fi
@@ -115,6 +120,26 @@ else
     fetch "$RAW_URL/config.ini" "$CONFIG_DIR/config.ini" || die "Could not fetch default config.ini"
   fi
   ok "Created $CONFIG_DIR/config.ini"
+fi
+
+# Optional GUI (steamframe-gui); failure to obtain it is not fatal.
+gui_src=""
+if [ -n "${SF_GUI_PATH:-}" ]; then gui_src="$SF_GUI_PATH"
+elif [ -n "$SRC_DIR" ] && [ -f "$SRC_DIR/build/$GUI_NAME" ]; then gui_src="$SRC_DIR/build/$GUI_NAME"
+elif fetch "$BASE_URL/$GUI_NAME-$ARCH" "$tmp/$GUI_NAME" 2>/dev/null; then gui_src="$tmp/$GUI_NAME"
+fi
+if [ -n "$gui_src" ]; then
+  mkdir -p "$BIN_DIR" "$APP_DIR"
+  install -m 755 "$gui_src" "$BIN_DIR/$GUI_NAME"
+  if [ -n "$SRC_DIR" ] && [ -f "$SRC_DIR/packaging/$DESKTOP_NAME" ]; then
+    cp "$SRC_DIR/packaging/$DESKTOP_NAME" "$APP_DIR/$DESKTOP_NAME"
+  else
+    fetch "$RAW_URL/packaging/$DESKTOP_NAME" "$APP_DIR/$DESKTOP_NAME" || warn "Could not fetch $DESKTOP_NAME"
+  fi
+  sed -i "s|^Exec=.*|Exec=$BIN_DIR/$GUI_NAME|" "$APP_DIR/$DESKTOP_NAME" 2>/dev/null || true
+  ok "GUI installed: $BIN_DIR/$GUI_NAME"
+else
+  warn "GUI binary not available; skipping (build with -DBUILD_GUI=ON or set SF_GUI_PATH)"
 fi
 
 ok "Layer installed and registered: $MANIFEST_DIR/$MANIFEST_NAME"

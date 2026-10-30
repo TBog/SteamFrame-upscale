@@ -1,4 +1,5 @@
 #include "denoise.hpp"
+#include "ipc.hpp"
 #include <chrono>
 #include <cstdio>
 #include <random>
@@ -19,6 +20,18 @@ int main() {
         std::ofstream("/tmp/sf_test.ini") << "[p]\ntemporal_alpha = 0.5\nmotion_threshold=0.1\nsharpness_weight=0.3\n";
         Config c = Config::load("/tmp/sf_test.ini");
         CHECK(c.temporal_alpha == 0.5f && c.motion_threshold == 0.1f && c.sharpness_weight == 0.3f);
+    }
+    { // IPC commands + enabled key
+        Config c; std::atomic<bool> bp{false};
+        CHECK(handleCommand("TOGGLE", c, bp).rfind("OK bypassed", 0) == 0 && bp);
+        CHECK(handleCommand("ENABLE", c, bp).rfind("OK active", 0) == 0 && !bp);
+        handleCommand("DISABLE", c, bp); CHECK(bp);
+        handleCommand("SET_ALPHA 0.4", c, bp); CHECK(c.temporal_alpha == 0.4f);
+        handleCommand("SET_SHARPNESS 5", c, bp); CHECK(c.sharpness_weight == 1.f);
+        CHECK(handleCommand("SET_ALPHA", c, bp) == "ERR bad value");
+        CHECK(handleCommand("NOPE", c, bp) == "ERR unknown command");
+        c.enabled = 0.f; c.save("/tmp/sf_test2.ini");
+        CHECK(Config::load("/tmp/sf_test2.ini").enabled == 0.f);
     }
     { // Temporal denoise: noise variance drops on static scene
         Pipeline p; Image out; std::mt19937 rng(1); std::normal_distribution<float> n(0.f, 0.03f);
