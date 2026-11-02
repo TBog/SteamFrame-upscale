@@ -6,10 +6,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 An OpenXR API layer (`XR_APILAYER_STEAMFRAME_passthrough_denoise`) that applies temporal denoise +
 contrast-adaptive sharpening (CAS) to monochrome VR passthrough camera feeds, in place, on the GPU,
-right before `xrReleaseSwapchainImage`. Target budget: <2ms GPU time per frame. **Status: compiles
-and exports the negotiation entry point, but has never been run against a real runtime/GPU** — the
-shader, barriers, and timing budget are unverified. Treat any change to `src/layer.cpp` or
-`shaders/denoise_cas.comp` as unverified until actually tested on hardware.
+right before `xrReleaseSwapchainImage`. Target budget: <2ms GPU time per frame. **Status: verified
+end-to-end against a stub OpenXR runtime + software Vulkan device** (`tests/integration/`; loader
+negotiation, hook sequencing, and the real compute shader all confirmed working), **but never run
+against a real OpenXR runtime/HMD** — the 2ms timing budget is still unverified. Treat any change
+to `src/layer.cpp` or `shaders/denoise_cas.comp` as needing a `layer_smoke` rerun (see below), and
+still unverified-on-real-hardware regardless.
 
 ## Build & test commands
 
@@ -19,16 +21,19 @@ sudo apt install libvulkan-dev libopenxr-dev glslang-tools   # Debian/Ubuntu
 # or: sudo pacman -S --needed base-devel cmake vulkan-headers vulkan-icd-loader openxr glslang  # Arch
 
 cmake -B build && cmake --build build -j
-ctest --test-dir build                          # runs the CPU reference pipeline tests
-build/test_pipeline                              # run the test binary directly (more verbose output)
+ctest --test-dir build --output-on-failure      # CPU pipeline tests + the layer_smoke integration test
+build/test_pipeline                              # run the CPU test binary directly (more verbose output)
 ```
 
-If Vulkan/OpenXR/glslang aren't found, CMake skips the `steamframe_layer` target but still builds
-`test_pipeline` — the CPU reference pipeline (`include/denoise.hpp`) has no graphics-API dependency,
-so the test suite runs anywhere (including this Windows dev machine). There is no single-test
-filter; `test_pipeline.cpp` is one `main()` with sequential `CHECK` blocks per scenario (config
-parsing, temporal denoise variance, edge sharpening, ghosting, per-eye independence, teardown
-cycles, CPU timing) — comment out blocks locally if iterating on one.
+If Vulkan/OpenXR/glslang aren't found, CMake skips the `steamframe_layer` target (and, transitively,
+`layer_smoke`) but still builds `test_pipeline` — the CPU reference pipeline (`include/denoise.hpp`)
+has no graphics-API dependency, so that test runs anywhere (including this Windows dev machine, via
+WSL for the full build). There is no single-test filter for `test_pipeline.cpp`; it's one `main()`
+with sequential `CHECK` blocks per scenario (config parsing, temporal denoise variance, edge
+sharpening, ghosting, per-eye independence, teardown cycles, CPU timing) — comment out blocks
+locally if iterating on one. `ctest -R layer_smoke` isolates the integration test; it's skipped
+(not failed) with CTest exit code 77 on a machine with no usable Vulkan device — see
+`tests/integration/README.md`.
 
 Runtime env vars for the built layer: `XR_API_LAYER_PATH=<build dir>`,
 `XR_ENABLE_API_LAYERS=XR_APILAYER_STEAMFRAME_passthrough_denoise`, `SF_CONFIG=<path>` (config.ini,
@@ -87,6 +92,21 @@ re-record (`record()`) and resubmit the compute pass, then call through to the r
 a memory barrier between them, then barriers back to `COLOR_ATTACHMENT_OPTIMAL`. All Vulkan state
 and the `g_sessions`/`g_swapchains` maps are protected by one global `g_mutex`; the layer assumes the
 app does not submit on the same `VkQueue` concurrently during `xrReleaseSwapchainImage`.
+
+### `tests/integration/`: proving the layer actually loads and runs
+
+Nothing above this could previously be verified without a real OpenXR runtime (SteamVR/Monado) —
+the OpenXR loader resolves the active *runtime* before it ever looks at layers, so with no runtime
+installed, `xrCreateInstance` fails at `RuntimeInterface::LoadRuntimes` and the layer is never even
+discovered, regardless of layer-specific setup. `tests/integration/` solves this with a from-scratch
+fake OpenXR *runtime* (`stub_runtime.cpp`, a separate concept from an API *layer* — it sits at the
+bottom of the chain and must itself allocate real `VkImage`s for swapchains) plus a Vulkan+OpenXR
+test app (`smoke_test.cpp`) that drives a real session/swapchain through the real layer and checks
+that per-pixel noise variance actually drops after `xrReleaseSwapchainImage` — i.e. that the
+compute shader really ran, not just that nothing crashed. `XR_RUNTIME_JSON` (set by the `layer_smoke`
+ctest entry) points the loader straight at the stub runtime's manifest, bypassing the normal
+`active_runtime.json` discovery entirely. See that directory's README for what this does and does
+not prove (notably: timing is not representative, and only `arraySize == 1` is exercised).
 
 ## Packaging & distribution
 

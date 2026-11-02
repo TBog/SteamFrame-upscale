@@ -6,7 +6,10 @@ Guide for testing the SteamFrame passthrough denoise OpenXR API layer
 - Layer name (from the manifest): `XR_APILAYER_STEAMFRAME_passthrough_denoise`
 - Manifest: `XR_APILAYER_SteamFrame_passthrough_denoise.json` (copied next to the library in the build dir)
 
-> Status: the layer has not yet been verified on a real runtime/GPU. Treat the 2 ms budget as unconfirmed until measured.
+> Status: `tests/integration/` verifies the layer end-to-end (loader negotiation, hook sequencing,
+> the real compute shader) against a stub OpenXR runtime and a software Vulkan device -- see that
+> directory's README. It has not yet been verified against a real OpenXR runtime/HMD; treat the
+> 2 ms budget as unconfirmed until measured there.
 
 ## 0. Build
 

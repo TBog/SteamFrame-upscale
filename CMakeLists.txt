@@ -71,3 +71,38 @@ if(TARGET steamframe_layer)
       file(INSTALL \"${CMAKE_SOURCE_DIR}/config.ini\" DESTINATION \"${_sf_home}/.config/steamframe-passthrough\")
     endif()")
 endif()
+
+# Integration smoke test: a fake OpenXR runtime (tests/integration/stub_runtime.cpp) plus a
+# Vulkan+OpenXR test app (tests/integration/smoke_test.cpp) that drives the real layer end-to-end
+# with no HMD/compositor needed. Requires the actual loader library to link the test app against
+# (optional for the layer itself -- see the comment above -- but required here). Not installed;
+# dev/test tooling only. See tests/integration/README.md.
+if(TARGET steamframe_layer AND OPENXR_LOADER)
+  add_library(sf_stub_runtime SHARED tests/integration/stub_runtime.cpp)
+  target_include_directories(sf_stub_runtime PRIVATE ${OPENXR_INCLUDE_DIR})
+  target_link_libraries(sf_stub_runtime PRIVATE Vulkan::Vulkan)
+  set_target_properties(sf_stub_runtime PROPERTIES PREFIX "lib")
+
+  add_executable(layer_smoke_test tests/integration/smoke_test.cpp)
+  target_include_directories(layer_smoke_test PRIVATE ${OPENXR_INCLUDE_DIR})
+  target_link_libraries(layer_smoke_test PRIVATE Vulkan::Vulkan ${OPENXR_LOADER})
+
+  # file(GENERATE) supports $<TARGET_FILE:...>, so the manifest can embed the real build path to
+  # the stub runtime .so without a separate post-build step.
+  file(GENERATE OUTPUT ${CMAKE_BINARY_DIR}/integration/active_runtime.json CONTENT
+"{
+  \"file_format_version\": \"1.0.0\",
+  \"runtime\": {
+    \"library_path\": \"$<TARGET_FILE:sf_stub_runtime>\",
+    \"name\": \"SteamFrame Stub Test Runtime\"
+  }
+}
+")
+
+  add_test(NAME layer_smoke COMMAND layer_smoke_test)
+  set_tests_properties(layer_smoke PROPERTIES
+    ENVIRONMENT "XR_RUNTIME_JSON=${CMAKE_BINARY_DIR}/integration/active_runtime.json;XR_API_LAYER_PATH=${CMAKE_BINARY_DIR};XR_ENABLE_API_LAYERS=XR_APILAYER_STEAMFRAME_passthrough_denoise"
+    SKIP_RETURN_CODE 77)
+else()
+  message(STATUS "OpenXR loader library not found: skipping layer_smoke integration test")
+endif()
