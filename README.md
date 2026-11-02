@@ -15,3 +15,7 @@ Runtime knobs: `SF_CONFIG=<path to config.ini>` (reloaded live), `SF_PROFILE=1` 
 Status: the layer compiles, negotiates correctly with a real OpenXR loader, and its compute shader has been verified end-to-end (see `tests/integration/`) against a stub runtime on a software Vulkan device -- but it has not yet been run against a real OpenXR runtime/HMD, so the 2 ms budget is still unverified. It requires the `shaderStorageImageExtendedFormats` device feature and submits on the app's queue (the app must not submit on it concurrently from another thread during `xrReleaseSwapchainImage`).
 
 Install (user-local, survives SteamOS updates): `curl -fsSL https://tbog.github.io/SteamFrame-upscale/get.sh | bash`; remove with `... | bash -s -- --uninstall`. From a local build, `cmake --install build` does the same. Set `SF_PROFILE=1` for timing logs.
+
+## GUI
+
+`decky-plugin/`: a [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader) plugin exposing the four `config.ini` tunables as Quick Access Menu sliders -- no IPC, it just edits the file the layer already hot-reloads. See that directory's README, including the caveat that Decky's own Steam Frame/VR support is itself still incomplete upstream.

@@ -108,6 +108,19 @@ ctest entry) points the loader straight at the stub runtime's manifest, bypassin
 `active_runtime.json` discovery entirely. See that directory's README for what this does and does
 not prove (notably: timing is not representative, and only `arraySize == 1` is exercised).
 
+### `decky-plugin/`: GUI
+
+A [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader) plugin (Python backend +
+React/`@decky/ui` frontend, scaffolded from `decky-plugin-template`) exposing the four `config.ini`
+tunables as Quick Access Menu sliders. There is no IPC with the layer: `main.py` just reads/writes
+`~/.config/steamframe-passthrough/config.ini` directly, and `src/layer.cpp`'s existing hot-reload
+(polled every 120 released images) picks up the change on its own — this needed zero changes to the
+C++ layer. Keep `main.py`'s `PARAMS` and `src/index.tsx`'s `Params`/`DEFAULTS` in sync with
+`sf::Config` if its fields ever change. Build/verification status and the (unresolved upstream)
+question of whether Decky's Quick Access Menu even renders in a VR session on Steam Frame yet are
+in that directory's README — don't assume this has been exercised against a real Decky Loader
+install, only that it builds and its ini-parsing logic was unit-verified standalone.
+
 ## Packaging & distribution
 
 - `layer/XR_APILAYER_SteamFrame_passthrough_denoise.json` — explicit-layer manifest template with a
