@@ -60,7 +60,7 @@ sed "s#\"./libsteamframe_layer.so\"#\"$BUILD/libsteamframe_layer.so\"#" \
   "$BUILD/XR_APILAYER_SteamFrame_passthrough_denoise.json" \
   > "$DEST/XR_APILAYER_SteamFrame_passthrough_denoise.json"
 # Optional: persistent config
-mkdir -p ~/.config/steamframe && cp config.ini ~/.config/steamframe/config.ini
+mkdir -p ~/.config/steamframe-passthrough && cp config.ini ~/.config/steamframe-passthrough/config.ini
 ```
 
 Then enable it per launch with `XR_ENABLE_API_LAYERS=XR_APILAYER_STEAMFRAME_passthrough_denoise`

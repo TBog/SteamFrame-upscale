@@ -113,7 +113,7 @@ bool g_profile = false;
 void loadConfig() {
     if (const char* e = std::getenv("SF_CONFIG")) g_cfgPath = e;
     else if (std::filesystem::exists("config.ini")) g_cfgPath = "config.ini";
-    else if (const char* h = std::getenv("HOME")) g_cfgPath = std::string(h) + "/.config/steamframe/config.ini";
+    else if (const char* h = std::getenv("HOME")) g_cfgPath = std::string(h) + "/.config/steamframe-passthrough/config.ini";
     g_profile = std::getenv("SF_PROFILE") != nullptr;
     std::error_code ec;
     if (!g_cfgPath.empty() && std::filesystem::exists(g_cfgPath, ec)) {
