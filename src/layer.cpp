@@ -70,6 +70,7 @@ struct ImageRes {  // per swapchain image
     VkFence fence{};
     VkQueryPool qp{};
     bool submitted = false;
+    bool layoutInit = false;  // true once we've barriered this image out of its runtime-provided initial layout
 };
 
 struct SwapchainCtx {
@@ -369,10 +370,20 @@ void record(SwapchainCtx& w, ImageRes& im, const sf::Config& cfg) {
 
     VkImageMemoryBarrier pre[1 + 2 * kMaxLayers]{};
     uint32_t np = 0;
-    pre[np++] = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, nullptr, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                 VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+    // The first time we process a given swapchain image it is still in whatever layout the
+    // runtime created it with (VK_IMAGE_LAYOUT_UNDEFINED, same assumption as histInit below for
+    // the history images we allocate ourselves); claiming COLOR_ATTACHMENT_OPTIMAL as oldLayout
+    // on that first transition is a lie Vulkan doesn't require the driver to tolerate. From the
+    // second use onward our own barrier below always leaves it in COLOR_ATTACHMENT_OPTIMAL, which
+    // we assume (same convention as a regular color-attachment swapchain) is what the app renders
+    // into and hands back for release.
+    pre[np++] = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, nullptr,
+                 im.layoutInit ? VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT : VkAccessFlags(0),
+                 VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                 im.layoutInit ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
                  VK_IMAGE_LAYOUT_GENERAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, im.image,
                  {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, w.layers}};
+    im.layoutInit = true;
     for (uint32_t l = 0; l < w.layers; ++l)
         if (!w.layer[l].histInit) {
             for (int i = 0; i < 2; ++i)
@@ -627,7 +638,15 @@ XRAPI_ATTR XrResult XRAPI_CALL hCreateApiLayerInstance(const XrInstanceCreateInf
     std::lock_guard<std::mutex> lk(g_mutex);
     g_next = Dispatch{};
     g_next.gipa = gipa;
-#define LOAD(n) gipa(*instance, "xr" #n, reinterpret_cast<PFN_xrVoidFunction*>(&g_next.n))
+    bool ok = true;
+#define LOAD(n)                                                                                           \
+    do {                                                                                                   \
+        XrResult lr = gipa(*instance, "xr" #n, reinterpret_cast<PFN_xrVoidFunction*>(&g_next.n));          \
+        if (XR_FAILED(lr) || !g_next.n) {                                                                  \
+            std::fprintf(stderr, "[%s] failed to resolve xr" #n " (XrResult %d)\n", kLayerName, (int)lr);  \
+            ok = false;                                                                                    \
+        }                                                                                                   \
+    } while (0)
     LOAD(DestroyInstance);
     LOAD(CreateSession);
     LOAD(DestroySession);
@@ -637,6 +656,16 @@ XRAPI_ATTR XrResult XRAPI_CALL hCreateApiLayerInstance(const XrInstanceCreateInf
     LOAD(AcquireSwapchainImage);
     LOAD(ReleaseSwapchainImage);
 #undef LOAD
+    if (!ok) {
+        // The instance below us was already created by nextCreateApiLayerInstance above; tear it
+        // down before reporting failure so we don't leak it.
+        PFN_xrDestroyInstance destroy = nullptr;
+        if (XR_SUCCEEDED(gipa(*instance, "xrDestroyInstance", reinterpret_cast<PFN_xrVoidFunction*>(&destroy))) &&
+            destroy)
+            destroy(*instance);
+        g_next = Dispatch{};
+        return XR_ERROR_INITIALIZATION_FAILED;
+    }
     loadConfig();
     return XR_SUCCESS;
 }
