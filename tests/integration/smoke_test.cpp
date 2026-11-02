@@ -213,15 +213,19 @@ int main() {
     vkMapMemory(dev, stagingMem, 0, VK_WHOLE_SIZE, 0, &stagingPtr);
 
     XrInstance xri{};
-    const char* layerName = "XR_APILAYER_STEAMFRAME_passthrough_denoise";
+    // Deliberately NOT setting enabledApiLayerNames here: this app doesn't know about the layer,
+    // matching how a real VR game would be unaware of it too. The layer is activated purely via
+    // XR_ENABLE_API_LAYERS (set by the ctest ENVIRONMENT property / documented in SETUP.md for
+    // real use via Steam launch options), the same way a real end user would activate it on an
+    // app they don't control the source of. Requesting it both ways at once (which this test did
+    // originally) tripped up at least one real loader (Ubuntu 24.04's libopenxr-loader1 1.0.20,
+    // which rejected the layer outright when asked for it through both paths simultaneously).
     XrApplicationInfo xrApp{};
     std::snprintf(xrApp.applicationName, sizeof(xrApp.applicationName), "sf_smoke_test");
     xrApp.applicationVersion = 1;
     xrApp.apiVersion = XR_CURRENT_API_VERSION;
     XrInstanceCreateInfo xici{XR_TYPE_INSTANCE_CREATE_INFO};
     xici.applicationInfo = xrApp;
-    xici.enabledApiLayerCount = 1;
-    xici.enabledApiLayerNames = &layerName;
     if (XrResult r = xrCreateInstance(&xici, &xri); r != XR_SUCCESS) failXr("xrCreateInstance", r);
 
     XrSystemGetInfo sgi{XR_TYPE_SYSTEM_GET_INFO};

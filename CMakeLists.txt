@@ -45,7 +45,17 @@ if(TARGET steamframe_layer)
   endif()
   set(SF_LIB_DIR "${_sf_home}/.local/lib/openxr")
   install(TARGETS steamframe_layer LIBRARY DESTINATION "${SF_LIB_DIR}")
-  file(WRITE ${CMAKE_BINARY_DIR}/steamframe_passthrough.json
+  # Written to a subdirectory, not CMAKE_BINARY_DIR directly: this manifest declares the same
+  # layer "name" as layer/XR_APILAYER_SteamFrame_passthrough_denoise.json (configure_file'd right
+  # into CMAKE_BINARY_DIR above for dev use with XR_API_LAYER_PATH=<build dir>, per SETUP.md). Two
+  # manifests for the same layer name in one XR_API_LAYER_PATH directory is exactly the kind of
+  # thing that looks harmless (one has a dangling library_path pointing at an not-yet-installed
+  # $HOME location) but isn't: at least one real loader (Ubuntu 24.04's libopenxr-loader1 1.0.20)
+  # refuses to load the layer at all when it sees a duplicate name, even though the other manifest
+  # for it is perfectly valid -- confirmed by this exact collision breaking the layer_smoke ctest
+  # on Ubuntu while passing on a newer loader (Arch's openxr 1.1.60) that's lenient about it.
+  set(SF_INSTALL_MANIFEST ${CMAKE_BINARY_DIR}/install-staging/steamframe_passthrough.json)
+  file(WRITE ${SF_INSTALL_MANIFEST}
 "{
   \"file_format_version\": \"1.0.0\",
   \"api_layer\": {
@@ -62,7 +72,7 @@ if(TARGET steamframe_layer)
   }
 }
 ")
-  install(FILES ${CMAKE_BINARY_DIR}/steamframe_passthrough.json
+  install(FILES ${SF_INSTALL_MANIFEST}
           DESTINATION "${_sf_home}/.local/share/openxr/1/api_layers/implicit.d")
   # Keep an existing user config untouched.
   install(CODE "

@@ -111,7 +111,9 @@ compute shader really ran, not just that nothing crashed — then writes `enable
 `XR_RUNTIME_JSON` (set by the `layer_smoke` ctest entry) points the loader straight at the stub
 runtime's manifest, bypassing the normal `active_runtime.json` discovery entirely. See that
 directory's README for what this does and does not prove (notably: timing is not representative,
-and only `arraySize == 1` is exercised).
+and only `arraySize == 1` is exercised). Loader compatibility gotcha discovered via this test: do
+not request the same explicit layer via both `XR_ENABLE_API_LAYERS` and `enabledApiLayerNames` at
+once — it broke layer loading entirely on a real (older) loader (see that README for specifics).
 
 ### `decky-plugin/`: GUI
 

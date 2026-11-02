@@ -50,6 +50,17 @@ build/layer_smoke_test
 `SF_CONFIG` must point at a writable path (it need not exist yet -- the test creates it for the
 bypass phase); `ctest` points it at `build/integration/smoke_config.ini`.
 
+`smoke_test.cpp` deliberately does **not** also set `enabledApiLayerNames` in its
+`XrInstanceCreateInfo` -- the layer is activated purely through `XR_ENABLE_API_LAYERS`, matching
+how a real end user activates it on a VR game they don't control the source of (see `SETUP.md`).
+Requesting the same explicit layer through both `XR_ENABLE_API_LAYERS` *and*
+`enabledApiLayerNames` at once is not just redundant: it outright broke layer loading (`XrResult
+-36`, `XR_ERROR_API_LAYER_NOT_PRESENT`) on Ubuntu 24.04's `libopenxr-loader1` 1.0.20, while working
+fine on a newer loader (Arch's openxr 1.1.60). Confirmed via instrumenting the layer's negotiation
+entry point: it was called and succeeded either way, but with both activation paths set the loader
+discarded it immediately afterward and never called `xrCreateApiLayerInstance` at all. If you ever
+need to request this layer programmatically from a test/dev app again, pick exactly one mechanism.
+
 ## What this does and does not prove
 
 Confirms: the layer's manifest/negotiation is discoverable and correct, `xrGetInstanceProcAddr`
