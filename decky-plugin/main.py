@@ -12,7 +12,10 @@ import decky
 CONFIG_PATH = os.path.join(decky.DECKY_USER_HOME, ".config", "steamframe-passthrough", "config.ini")
 
 # (min, max, default), mirroring sf::Config in include/denoise.hpp and config.ini's comments.
+# "enabled" is a bypass switch (0/1, not a shader parameter -- see hReleaseSwapchainImage) but
+# round-trips through this same generic get_config/set_param path like any other key.
 PARAMS = {
+    "enabled": (0.0, 1.0, 1.0),
     "temporal_alpha": (0.0, 1.0, 0.15),
     "motion_threshold": (0.0, 1.0, 0.08),
     "sharpness_weight": (0.0, 1.0, 0.8),

@@ -13,7 +13,9 @@ SteamVR/Monado (see `SETUP.md`). Needs no network access and no root.
   of synthetic sensor noise through `xrAcquireSwapchainImage`/`xrReleaseSwapchainImage`. It then
   checks that the per-pixel variance of the last 10 frames actually *dropped* versus the input --
   i.e. that the layer's temporal-denoise compute shader really ran on the GPU, not just that
-  nothing crashed.
+  nothing crashed. A second phase writes `enabled = 0` to `config.ini`, drives more frames past the
+  layer's hot-reload poll boundary, and checks variance *stops* dropping -- i.e. that the bypass
+  fast path really is skipping the compute dispatch, not just that the config key parses.
 - `loader_runtime_interfaces.h` -- vendored copy of the loader<->runtime negotiation structs
   (mirrors `include/loader_interfaces.h`, which covers the loader<->layer side used by the layer
   itself).
@@ -41,8 +43,12 @@ To run manually outside `ctest` (e.g. to add `XR_LOADER_DEBUG=all`):
 XR_RUNTIME_JSON=$PWD/build/integration/active_runtime.json \
 XR_API_LAYER_PATH=$PWD/build \
 XR_ENABLE_API_LAYERS=XR_APILAYER_STEAMFRAME_passthrough_denoise \
+SF_CONFIG=$PWD/build/integration/smoke_config.ini \
 build/layer_smoke_test
 ```
+
+`SF_CONFIG` must point at a writable path (it need not exist yet -- the test creates it for the
+bypass phase); `ctest` points it at `build/integration/smoke_config.ini`.
 
 ## What this does and does not prove
 

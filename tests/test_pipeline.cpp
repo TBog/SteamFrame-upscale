@@ -19,6 +19,12 @@ int main() {
         std::ofstream("/tmp/sf_test.ini") << "[p]\ntemporal_alpha = 0.5\nmotion_threshold=0.1\nsharpness_weight=0.3\n";
         Config c = Config::load("/tmp/sf_test.ini");
         CHECK(c.temporal_alpha == 0.5f && c.motion_threshold == 0.1f && c.sharpness_weight == 0.3f);
+        CHECK(c.enabled == 1.f);  // not present in the file above -> default
+    }
+    { // enabled bypass toggle: parsed like any other key, defaults to on
+        std::ofstream("/tmp/sf_test_bypass.ini") << "[p]\nenabled = 0\n";
+        CHECK(Config::load("/tmp/sf_test_bypass.ini").enabled == 0.f);
+        CHECK(Config{}.enabled == 1.f);
     }
     { // Temporal denoise: noise variance drops on static scene
         Pipeline p; Image out; std::mt19937 rng(1); std::normal_distribution<float> n(0.f, 0.03f);

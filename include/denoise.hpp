@@ -15,12 +15,14 @@ struct Config {
     float motion_threshold = 0.08f;
     float sharpness_weight = 0.8f;
     float noise_floor = 0.02f;
+    float enabled = 1.f;  // 0 = raw passthrough (layer bypassed), 1 = filter on
 
     bool set(const std::string& k, float v) {
         if (k == "temporal_alpha") temporal_alpha = v;
         else if (k == "motion_threshold") motion_threshold = v;
         else if (k == "sharpness_weight") sharpness_weight = v;
         else if (k == "noise_floor") noise_floor = v;
+        else if (k == "enabled") enabled = v;
         else return false;
         return true;
     }

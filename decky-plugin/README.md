@@ -1,14 +1,17 @@
 # SteamFrame Passthrough Denoise (Decky Loader plugin)
 
 A [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader) plugin exposing the
-passthrough denoise layer's four `config.ini` tunables (`temporal_alpha`, `motion_threshold`,
-`sharpness_weight`, `noise_floor`, documented in the repo-root `config.ini` and `SETUP.md`) as
-sliders in the Quick Access Menu.
+passthrough denoise layer's `config.ini` settings in the Quick Access Menu: a filter-enabled
+toggle (`enabled` -- raw passthrough, no GPU dispatch, when off) plus the four shader tunables
+(`temporal_alpha`, `motion_threshold`, `sharpness_weight`, `noise_floor`, documented in the
+repo-root `config.ini` and `SETUP.md`) as sliders.
 
 There is no IPC with the running layer. `src/layer.cpp` already polls `config.ini`'s mtime and
 hot-reloads it within a frame or two (see `SETUP.md`), so this plugin's entire job is reading and
 writing that one file at `~/.config/steamframe-passthrough/config.ini` -- `main.py` has no other
-responsibility, and `src/layer.cpp` needed no changes to support it.
+responsibility, and `src/layer.cpp` needed no socket/IPC to support it (an earlier draft PR,
+superseded by this plugin, added a UNIX-socket control protocol for the same bypass toggle; see
+that PR's discussion for why it wasn't worth the added complexity for this use case).
 
 ## Layout
 
@@ -17,8 +20,8 @@ responsibility, and `src/layer.cpp` needed no changes to support it.
   `sf::Config::load` in `include/denoise.hpp` (skip blank/`;`/`#` lines, split on first `=`),
   overwriting an existing key's line in place and preserving every other line (comments, section
   header) untouched.
-- `src/index.tsx` -- frontend: four `SliderField`s from `@decky/ui`, 0..1 range, synced to the
-  backend on every change.
+- `src/index.tsx` -- frontend: a `ToggleField` for `enabled` plus four `SliderField`s (0..1 range)
+  from `@decky/ui`, all synced to the backend on every change.
 - `plugin.json`, `package.json`, `rollup.config.js`, `tsconfig.json` -- scaffolding from the
   official [decky-plugin-template](https://github.com/SteamDeckHomebrew/decky-plugin-template),
   trimmed down (no router/event-listener example code, no `_root` flag since this plugin only

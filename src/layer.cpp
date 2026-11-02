@@ -579,6 +579,18 @@ XRAPI_ATTR XrResult XRAPI_CALL hReleaseSwapchainImage(XrSwapchain sw, const XrSw
     if (w && idx < w->images.size()) {
         ImageRes& im = w->images[idx];
         SessionCtx& s = *w->sc;
+        if (cfg.enabled < 0.5f) {  // raw passthrough: skip the dispatch, just drain any in-flight work
+            if (im.submitted) {
+                vkWaitForFences(s.device, 1, &im.fence, VK_TRUE, UINT64_MAX);
+                vkResetFences(s.device, 1, &im.fence);
+                im.submitted = false;
+            }
+            // The app still renders into (and leaves in COLOR_ATTACHMENT_OPTIMAL) this image even
+            // while we're bypassed; record()'s first-use UNDEFINED assumption must not apply to a
+            // bypassed-then-re-enabled image, so mark it as no longer pristine here too.
+            im.layoutInit = true;
+            return g_next.ReleaseSwapchainImage(sw, ri);
+        }
         if (im.submitted) {
             vkWaitForFences(s.device, 1, &im.fence, VK_TRUE, UINT64_MAX);
             vkResetFences(s.device, 1, &im.fence);

@@ -1,16 +1,23 @@
 // End-to-end smoke test for src/layer.cpp: drives a real OpenXR instance/session/swapchain
 // through the layer against stub_runtime.cpp (a fake runtime with no presentation, see its header
-// comment) on a real -- possibly software -- Vulkan device. Feeds `kFrames` of synthetic sensor
-// noise through xrAcquireSwapchainImage/xrReleaseSwapchainImage and checks that the per-pixel
-// variance actually dropped by the end, i.e. that the layer's temporal-denoise compute shader
-// really ran on the GPU, not just that nothing crashed (same check as the "noise variance drops"
-// case in tests/test_pipeline.cpp, but against the real Vulkan path instead of the CPU reference).
+// comment) on a real -- possibly software -- Vulkan device.
 //
-// Needs XR_RUNTIME_JSON pointing at the stub runtime's manifest and XR_API_LAYER_PATH /
-// XR_ENABLE_API_LAYERS pointing at the built layer; `ctest` wires these up (see CMakeLists.txt).
-// If no Vulkan device is present, or it lacks shaderStorageImageExtendedFormats (the same
-// requirement src/layer.cpp itself checks), the test is skipped (exit 77) rather than failed --
-// that is an environment limitation, not a layer bug. See tests/integration/README.md.
+// Phase 1 feeds `kFrames` of synthetic sensor noise through xrAcquireSwapchainImage/
+// xrReleaseSwapchainImage and checks that the per-pixel variance actually dropped by the end, i.e.
+// that the layer's temporal-denoise compute shader really ran on the GPU, not just that nothing
+// crashed (same check as the "noise variance drops" case in tests/test_pipeline.cpp, but against
+// the real Vulkan path instead of the CPU reference).
+//
+// Phase 2 writes `enabled = 0` to config.ini and drives more frames past the layer's hot-reload
+// poll boundary, checking that per-pixel variance stops dropping, i.e. that the bypass fast path
+// in hReleaseSwapchainImage is actually skipping the compute dispatch on the GPU.
+//
+// Needs XR_RUNTIME_JSON pointing at the stub runtime's manifest, XR_API_LAYER_PATH /
+// XR_ENABLE_API_LAYERS pointing at the built layer, and SF_CONFIG pointing at a writable (need not
+// yet exist) path for phase 2; `ctest` wires all three up (see CMakeLists.txt). If no Vulkan
+// device is present, or it lacks shaderStorageImageExtendedFormats (the same requirement
+// src/layer.cpp itself checks), the test is skipped (exit 77) rather than failed -- that is an
+// environment limitation, not a layer bug. See tests/integration/README.md.
 #include <vulkan/vulkan.h>
 #define XR_USE_GRAPHICS_API_VULKAN
 #include <openxr/openxr.h>
@@ -19,6 +26,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <random>
 #include <vector>
 
@@ -258,46 +266,70 @@ int main() {
 
     std::mt19937 rng(1);
     std::normal_distribution<float> noise(0.f, 0.03f);
-    double inVar = 0, outVar = 0;
-    int varSamples = 0;
     std::vector<float> frame(kW * kH), readback;
 
-    for (uint32_t f = 0; f < kFrames; ++f) {
-        for (auto& v : frame) v = std::clamp(0.5f + noise(rng), 0.f, 1.f);
+    // Feeds `count` frames of synthetic sensor noise through acquire/release, measuring per-pixel
+    // variance of input vs. output over the last kVarWindow frames. Reused for both the
+    // denoise-works phase and the bypass-works phase below.
+    auto runFrames = [&](uint32_t count, double& inVar, double& outVar, int& samples) {
+        for (uint32_t f = 0; f < count; ++f) {
+            for (auto& v : frame) v = std::clamp(0.5f + noise(rng), 0.f, 1.f);
 
-        XrSwapchainImageAcquireInfo acq{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
-        uint32_t idx = 0;
-        if (XrResult r = xrAcquireSwapchainImage(swapchain, &acq, &idx); r != XR_SUCCESS)
-            failXr("xrAcquireSwapchainImage", r);
-        XrSwapchainImageWaitInfo wait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
-        wait.timeout = XR_INFINITE_DURATION;
-        if (XrResult r = xrWaitSwapchainImage(swapchain, &wait); r != XR_SUCCESS)
-            failXr("xrWaitSwapchainImage", r);
+            XrSwapchainImageAcquireInfo acq{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+            uint32_t idx = 0;
+            if (XrResult r = xrAcquireSwapchainImage(swapchain, &acq, &idx); r != XR_SUCCESS)
+                failXr("xrAcquireSwapchainImage", r);
+            XrSwapchainImageWaitInfo wait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+            wait.timeout = XR_INFINITE_DURATION;
+            if (XrResult r = xrWaitSwapchainImage(swapchain, &wait); r != XR_SUCCESS)
+                failXr("xrWaitSwapchainImage", r);
 
-        uploadFrame(dev, pool, queue, images[idx].image, staging, stagingPtr, frame, everUsed[idx]);
-        everUsed[idx] = true;
+            uploadFrame(dev, pool, queue, images[idx].image, staging, stagingPtr, frame, everUsed[idx]);
+            everUsed[idx] = true;
 
-        XrSwapchainImageReleaseInfo rel{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
-        if (XrResult r = xrReleaseSwapchainImage(swapchain, &rel); r != XR_SUCCESS)
-            failXr("xrReleaseSwapchainImage", r);
-        // The layer submits its compute pass asynchronously inside xrReleaseSwapchainImage; wait
-        // for it (same VkDevice/VkQueue) before touching the image again.
-        vkDeviceWaitIdle(dev);
+            XrSwapchainImageReleaseInfo rel{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+            if (XrResult r = xrReleaseSwapchainImage(swapchain, &rel); r != XR_SUCCESS)
+                failXr("xrReleaseSwapchainImage", r);
+            // The layer submits its compute pass asynchronously inside xrReleaseSwapchainImage;
+            // wait for it (same VkDevice/VkQueue) before touching the image again.
+            vkDeviceWaitIdle(dev);
 
-        if (f >= kFrames - kVarWindow) {
-            downloadFrame(dev, pool, queue, images[idx].image, staging, stagingPtr, readback);
-            for (uint32_t i = 0; i < kW * kH; ++i) {
-                inVar += double(frame[i] - 0.5f) * double(frame[i] - 0.5f);
-                outVar += double(readback[i] - 0.5f) * double(readback[i] - 0.5f);
+            if (f >= count - kVarWindow) {
+                downloadFrame(dev, pool, queue, images[idx].image, staging, stagingPtr, readback);
+                for (uint32_t i = 0; i < kW * kH; ++i) {
+                    inVar += double(frame[i] - 0.5f) * double(frame[i] - 0.5f);
+                    outVar += double(readback[i] - 0.5f) * double(readback[i] - 0.5f);
+                }
+                ++samples;
             }
-            ++varSamples;
         }
-    }
+    };
 
+    double inVar = 0, outVar = 0;
+    int varSamples = 0;
+    runFrames(kFrames, inVar, outVar, varSamples);
     std::printf("input variance %.6f, output variance %.6f over %d frames\n", inVar / varSamples,
                 outVar / varSamples, varSamples);
     if (!(outVar < inVar * 0.5))
         fail("output variance did not drop vs input -- temporal denoise does not appear to have run on the GPU");
+
+    // Bypass phase: write enabled=0 to config.ini and drive enough frames for the layer's own
+    // hot-reload (polled every 120 *released* images, see src/layer.cpp's maybeReloadConfig) to
+    // pick it up, then confirm the compute pass is actually being skipped -- not just that the
+    // "enabled" config key parses, but that the real Vulkan fast path in hReleaseSwapchainImage
+    // takes effect.
+    const char* cfgPath = std::getenv("SF_CONFIG");
+    if (!cfgPath) fail("SF_CONFIG must be set so this phase can hot-reload enabled=0 (see tests/integration/README.md)");
+    {
+        std::ofstream(cfgPath) << "[passthrough]\nenabled = 0\n";
+        double inVar2 = 0, outVar2 = 0;
+        int samples2 = 0;
+        runFrames(130, inVar2, outVar2, samples2);
+        std::printf("[bypass] input variance %.6f, output variance %.6f over %d frames\n", inVar2 / samples2,
+                    outVar2 / samples2, samples2);
+        if (!(outVar2 > inVar2 * 0.9))
+            fail("output variance dropped even with enabled=0 -- the bypass fast path does not appear to be skipping the compute pass");
+    }
 
     xrDestroySwapchain(swapchain);
     xrDestroySession(session);

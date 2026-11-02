@@ -101,7 +101,7 @@ if(TARGET steamframe_layer AND OPENXR_LOADER)
 
   add_test(NAME layer_smoke COMMAND layer_smoke_test)
   set_tests_properties(layer_smoke PROPERTIES
-    ENVIRONMENT "XR_RUNTIME_JSON=${CMAKE_BINARY_DIR}/integration/active_runtime.json;XR_API_LAYER_PATH=${CMAKE_BINARY_DIR};XR_ENABLE_API_LAYERS=XR_APILAYER_STEAMFRAME_passthrough_denoise"
+    ENVIRONMENT "XR_RUNTIME_JSON=${CMAKE_BINARY_DIR}/integration/active_runtime.json;XR_API_LAYER_PATH=${CMAKE_BINARY_DIR};XR_ENABLE_API_LAYERS=XR_APILAYER_STEAMFRAME_passthrough_denoise;SF_CONFIG=${CMAKE_BINARY_DIR}/integration/smoke_config.ini"
     SKIP_RETURN_CODE 77)
 else()
   message(STATUS "OpenXR loader library not found: skipping layer_smoke integration test")

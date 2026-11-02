@@ -58,10 +58,13 @@ comment at the top of each file says as much. `include/loader_interfaces.h` is u
 it's a vendored copy of OpenXR loader/layer negotiation structs not shipped in public openxr-dev
 packages.
 
-`sf::Config` (also in `denoise.hpp`) parses `config.ini`'s four tunables (`temporal_alpha`,
-`motion_threshold`, `sharpness_weight`, `noise_floor`) and is shared by both the CPU tests and the
-layer (`src/layer.cpp` loads/hot-reloads it and passes it to the shader via push constants —
-`PushConstants` in `layer.cpp` must match the `P` uniform block layout in the `.comp` file).
+`sf::Config` (also in `denoise.hpp`) parses `config.ini`'s tunables (`temporal_alpha`,
+`motion_threshold`, `sharpness_weight`, `noise_floor`) plus `enabled` (a bypass switch, checked in
+`hReleaseSwapchainImage` *before* the shader params even matter — see below) and is shared by both
+the CPU tests and the layer (`src/layer.cpp` loads/hot-reloads it and passes the four shader params
+to the shader via push constants — `PushConstants` in `layer.cpp` must match the `P` uniform block
+layout in the `.comp` file; `enabled` never reaches the shader at all, since when it's off the
+dispatch is skipped entirely).
 
 ### `src/layer.cpp`: the OpenXR layer itself
 
@@ -103,10 +106,12 @@ fake OpenXR *runtime* (`stub_runtime.cpp`, a separate concept from an API *layer
 bottom of the chain and must itself allocate real `VkImage`s for swapchains) plus a Vulkan+OpenXR
 test app (`smoke_test.cpp`) that drives a real session/swapchain through the real layer and checks
 that per-pixel noise variance actually drops after `xrReleaseSwapchainImage` — i.e. that the
-compute shader really ran, not just that nothing crashed. `XR_RUNTIME_JSON` (set by the `layer_smoke`
-ctest entry) points the loader straight at the stub runtime's manifest, bypassing the normal
-`active_runtime.json` discovery entirely. See that directory's README for what this does and does
-not prove (notably: timing is not representative, and only `arraySize == 1` is exercised).
+compute shader really ran, not just that nothing crashed — then writes `enabled = 0` to
+`config.ini` and checks variance *stops* dropping, verifying the bypass fast path for real.
+`XR_RUNTIME_JSON` (set by the `layer_smoke` ctest entry) points the loader straight at the stub
+runtime's manifest, bypassing the normal `active_runtime.json` discovery entirely. See that
+directory's README for what this does and does not prove (notably: timing is not representative,
+and only `arraySize == 1` is exercised).
 
 ### `decky-plugin/`: GUI
 

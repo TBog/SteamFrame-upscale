@@ -1,12 +1,15 @@
-import { PanelSection, PanelSectionRow, SliderField, staticClasses } from "@decky/ui";
+import { PanelSection, PanelSectionRow, SliderField, ToggleField, staticClasses } from "@decky/ui";
 import { callable, definePlugin } from "@decky/api";
 import { useEffect, useState } from "react";
 import { FaEye } from "react-icons/fa";
 
 // Mirrors sf::Config in include/denoise.hpp / config.ini -- keep names and defaults here in sync
 // with that struct if its fields ever change. The backend (main.py) is the only thing that
-// touches config.ini; this component just reflects/edits it.
+// touches config.ini; this component just reflects/edits it. `enabled` is a bypass switch (0/1,
+// not a shader parameter -- see hReleaseSwapchainImage in src/layer.cpp) but round-trips through
+// the same float-keyed get_config/set_param calls as the four sliders below.
 interface Params {
+  enabled: number;
   temporal_alpha: number;
   motion_threshold: number;
   sharpness_weight: number;
@@ -14,6 +17,7 @@ interface Params {
 }
 
 const DEFAULTS: Params = {
+  enabled: 1,
   temporal_alpha: 0.15,
   motion_threshold: 0.08,
   sharpness_weight: 0.8,
@@ -81,6 +85,14 @@ function Content() {
 
   return (
     <PanelSection title="Passthrough Denoise">
+      <PanelSectionRow>
+        <ToggleField
+          label="Filter enabled"
+          description="Off = raw passthrough, no processing (lower GPU usage)."
+          checked={params.enabled >= 0.5}
+          onChange={(checked) => onChange("enabled", checked ? 1 : 0)}
+        />
+      </PanelSectionRow>
       <ParamSlider
         param="temporal_alpha"
         label="Temporal smoothing"
