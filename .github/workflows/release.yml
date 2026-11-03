@@ -1,0 +1,74 @@
+name: Release
+
+# Builds libsteamframe_layer-<arch>.so for x86_64 and aarch64 and publishes them as GitHub
+# Release assets, matching exactly what get.sh looks for at
+# releases/latest/download/libsteamframe_layer-$(uname -m).so when there's no local build to use
+# instead. There are currently no releases for this repo at all, so that fallback in get.sh's
+# documented `curl | bash` one-liner has nothing to download -- this workflow is what that's
+# supposed to produce.
+#
+# Trigger either by pushing a `v*` tag, or manually via "Run workflow" with a tag name (the tag
+# need not exist yet; `gh release create` creates it pointing at the commit the workflow ran on).
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v0.1.0) -- created if it does not already exist'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  create-release:
+    name: Create GitHub release
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: tag
+        run: echo "tag=${{ inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+      - name: Create release if it doesn't already exist
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "${{ steps.tag.outputs.tag }}" >/dev/null 2>&1 && exit 0
+          gh release create "${{ steps.tag.outputs.tag }}" \
+            --title "${{ steps.tag.outputs.tag }}" --generate-notes --target "${{ github.sha }}"
+
+  build:
+    name: Build ${{ matrix.arch }}
+    needs: create-release
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake build-essential libvulkan-dev libopenxr-dev glslang-tools mesa-vulkan-drivers
+      - name: Configure
+        run: cmake -B build
+      - name: Build
+        run: cmake --build build -j
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+      - name: Rename asset
+        run: cp build/libsteamframe_layer.so "build/libsteamframe_layer-${{ matrix.arch }}.so"
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ needs.create-release.outputs.tag }}" \
+            "build/libsteamframe_layer-${{ matrix.arch }}.so" --clobber

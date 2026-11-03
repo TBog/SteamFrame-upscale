@@ -144,3 +144,14 @@ install, only that it builds and its ini-parsing logic was unit-verified standal
   *implicit* layer with `enable_environment`/`disable_environment` guards, unlike the dev-build
   manifest in `layer/` which is explicit-only — intentional difference between "installed for daily
   use, opt-in via env var" and "loaded only when testing from the build dir."
+- `get.sh`'s own fallback path (no `SF_LIB_PATH`, no local `build/`) fetches
+  `libsteamframe_layer-$(uname -m).so` from `releases/latest/download/` — i.e. it needs an actual
+  GitHub Release with that asset attached, which this repo did not have at all until
+  `.github/workflows/release.yml` was added. That workflow builds both `x86_64` (`ubuntu-latest`)
+  and `aarch64` (`ubuntu-24.04-arm`, free for public repos) and uploads them under those exact
+  names, triggered by pushing a `v*` tag or via `workflow_dispatch` with a tag input (no tag needs
+  to exist beforehand — `gh release create` makes it). Until a release has actually been published
+  this way, the `curl | bash` one-liner fails at the download step with a clear error (confirmed:
+  `get.sh`'s own error handling, `set -euo pipefail` + `die()`, is correct — exit code 1, clear
+  message); everything else about `get.sh` (install, idempotent re-run, `--uninstall` preserving
+  `config.ini`) was verified working end-to-end via `SF_LIB_PATH` standing in for a release asset.
