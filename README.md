@@ -8,12 +8,10 @@ curl -fsSL https://tbog.github.io/SteamFrame-upscale/get.sh | bash
 
 User-local (`~/.local`, `~/.config`), survives SteamOS updates. Uninstall: add `-s -- --uninstall`
 to the command above. Requires `libvulkan.so.1` and `libopenxr_loader.so.1` to already be present.
-
-> **Note:** this repo has no GitHub release yet, so the one-liner above currently fails at the
-> download step (`get.sh` falls back to fetching a prebuilt binary from
-> `releases/latest/download/`, and there is nothing there). Until a release is published (see
-> `.github/workflows/release.yml`), build from source instead -- see "Build from source" below --
-> then run `cmake --install build`, which does the same user-local install as `get.sh`.
+Fetches a prebuilt `x86_64`/`aarch64` binary from the latest GitHub release (built by
+`.github/workflows/release.yml`); if you need a build from a specific commit instead, build from
+source -- see "Build from source" below -- then run `cmake --install build`, which does the same
+user-local install as `get.sh`.
 
 ## Passthrough denoise
 - `include/denoise.hpp`: reference pipeline (motion-masked temporal accumulation + contrast-adaptive sharpening, per-eye ping-pong history) and `config.ini` loader.

@@ -146,12 +146,15 @@ install, only that it builds and its ini-parsing logic was unit-verified standal
   use, opt-in via env var" and "loaded only when testing from the build dir."
 - `get.sh`'s own fallback path (no `SF_LIB_PATH`, no local `build/`) fetches
   `libsteamframe_layer-$(uname -m).so` from `releases/latest/download/` — i.e. it needs an actual
-  GitHub Release with that asset attached, which this repo did not have at all until
-  `.github/workflows/release.yml` was added. That workflow builds both `x86_64` (`ubuntu-latest`)
-  and `aarch64` (`ubuntu-24.04-arm`, free for public repos) and uploads them under those exact
-  names, triggered by pushing a `v*` tag or via `workflow_dispatch` with a tag input (no tag needs
-  to exist beforehand — `gh release create` makes it). Until a release has actually been published
-  this way, the `curl | bash` one-liner fails at the download step with a clear error (confirmed:
-  `get.sh`'s own error handling, `set -euo pipefail` + `die()`, is correct — exit code 1, clear
-  message); everything else about `get.sh` (install, idempotent re-run, `--uninstall` preserving
-  `config.ini`) was verified working end-to-end via `SF_LIB_PATH` standing in for a release asset.
+  GitHub Release with that asset attached. `.github/workflows/release.yml` builds and publishes
+  both `x86_64` (`ubuntu-latest`) and `aarch64` (`ubuntu-24.04-arm`, free for public repos) under
+  those exact names, triggered by pushing a `v*` tag or via `workflow_dispatch` with a tag input
+  (no tag needs to exist beforehand — `gh release create` makes it). `v0.1.0` is published and the
+  documented `curl | bash` one-liner was run for real against it end-to-end on a clean machine:
+  install, idempotent re-run, `--uninstall` preserving `config.ini` all work, and the downloaded
+  `x86_64` binary (not a local rebuild) was run through `layer_smoke` and passed — same variance
+  numbers as a from-source build, confirming the release asset isn't just present but correct. The
+  `aarch64` asset was only checked statically (right architecture/size, exports the negotiation
+  symbol) — no ARM64 execution environment available to actually run it. Note: `deploy-pages.yml`
+  must not also trigger on `v*` tags — the `github-pages` environment's default protection rule
+  only allows deploys from the default branch, so a tag-triggered run always fails.
