@@ -57,7 +57,7 @@ have_lib() {
   return 1
 }
 missing=0
-for l in libvulkan.so.1 libopenxr_loader.so.1; do
+for l in libvulkan.so.1; do
   if have_lib "$l"; then ok "Found $l"; else warn "Missing $l"; missing=1; fi
 done
 [ "$missing" -eq 0 ] || die "Install the missing libraries and re-run"
