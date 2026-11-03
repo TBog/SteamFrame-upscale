@@ -75,6 +75,51 @@ QAM only shows up in SteamOS desktop/flat-screen mode on this hardware, this plu
 there (editing the same `config.ini` the layer reads), it just wouldn't be "usable while wearing
 the HMD" as originally asked for.
 
+## Workaround: reaching Decky's UI on Frame before official VR support lands
+
+Via [decky-loader#996](https://github.com/SteamDeckHomebrew/decky-loader/issues/996), confirmed
+straight from `injector.py` in the decky-loader source (not just the issue comment) -- so this is
+how Decky's own code already talks to Steam, not a guess:
+
+- Steam's own UI runs in a CEF (Chromium) process that exposes the standard [Chrome DevTools
+  Protocol](https://chromedevtools.github.io/devtools-protocol/) on `http://localhost:8080`.
+  `GET /json` lists the open CDP targets; decky-loader looks for the one it calls "GamepadUI" --
+  title in `SharedJSContext` / `Steam Shared Context presented by Valve™` / `Steam` / `SP`, and URL
+  containing `steamloopback.host/routes/` or `steamloopback.host/index.html` -- and opens a
+  WebSocket to that target's `webSocketDebuggerUrl` to send `Runtime.evaluate` commands. This is
+  exactly the shared JS context decky injects its own frontend (and therefore every plugin's panel,
+  including this one) into.
+- `window.DFL` is the global that injected code (decky's own, and by extension this is the same
+  object plugins reach via `@decky/ui`'s `Navigation` import) uses for SteamUI's router. Per a
+  decky-loader maintainer's reply in that same issue thread (no stable comment anchor to link --
+  see the issue itself): `DFL.Navigation.Navigate("/decky/settings")` force-navigates straight to
+  Decky's settings page, bypassing the fact that Frame has no QAM button/dashboard icon wired up
+  for it yet (the actual gap [decky-loader#1004](https://github.com/SteamDeckHomebrew/decky-loader/pull/1004)
+  is meant to close).
+
+To actually run that expression against a Frame headset, the practical recipe (same one the
+Steam Deck homebrew community already uses for desktop/flat-screen devtools access, not something
+specific to this plugin):
+
+1. Get a shell on the headset (SteamOS Developer Mode -> SSH, same as Steam Deck -- **not
+   independently confirmed that Frame exposes this identically to Deck**, since Frame hardware is
+   very new; treat this step as the main unverified assumption here).
+2. Tunnel the CDP port to your desktop: `ssh -L 8080:localhost:8080 <frame-ssh-target>`. This is
+   plain SSH port-forwarding, independent of Decky's own `cef_forward` setting (which is a
+   decky-settings-page toggle for the same thing over the network -- not useful here since reaching
+   that settings page is the whole problem being worked around).
+3. On your desktop, open Chrome/Chromium's `chrome://inspect/#devices`, add `localhost:8080` under
+   "Discover network targets", and open DevTools on the GamepadUI/SharedJSContext target found
+   above.
+4. In that DevTools window's Console tab, run `DFL.Navigation.Navigate("/decky/settings")`.
+
+**What this does and doesn't confirm:** this reaches Decky's own settings page, not necessarily a
+direct route to *this* plugin's panel specifically -- no such per-plugin URL is documented or
+confirmed. Once inside Decky's shell this way, the normal plugin list/sidebar should still work for
+navigating to this plugin's panel from there, same as on desktop, but that hasn't been tried
+either. Treat this whole section as a developer debugging path for confirming the GUI *can* render
+in a VR session at all, not a real end-user way to launch it.
+
 ## If `config.ini`'s fields ever change
 
 Keep three places in sync: `include/denoise.hpp`'s `sf::Config`, the repo-root `config.ini`'s
