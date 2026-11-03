@@ -29,6 +29,19 @@ that PR's discussion for why it wasn't worth the added complexity for this use c
 
 ## Building
 
+A build once failed with a cryptic `RangeError: Invalid string length` loading `react-icons`'
+large icon bundle, on Ubuntu 24.04 with its default `apt install nodejs` (18.19) active. It could
+not be reliably reproduced under controlled retesting afterward, including with that exact Node
+version deliberately put first on `PATH` again -- most likely a one-off filesystem hiccup reading
+that large file over the WSL/NTFS bridge the first time, not an actual Node-version dependency.
+There's no enforced version guard here: `package.json`'s `engines` field and a `preinstall`
+version check were both tried and found to not actually fire (`pnpm`, at least the standalone
+binary distribution installed via `npm install -g pnpm`, appears to always run lifecycle/build
+scripts under its own consistently-resolved Node rather than whatever is first on the invoking
+shell's `PATH`, so there may be nothing for a guard to meaningfully check here in the first place).
+CI (`.github/workflows/ci.yml`) provisions Node 20 via `actions/setup-node` regardless, as a
+reasonable default independent of this unresolved question.
+
 ```bash
 pnpm install
 pnpm run build       # -> dist/index.js
