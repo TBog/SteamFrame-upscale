@@ -7,7 +7,8 @@ curl -fsSL https://tbog.github.io/SteamFrame-upscale/get.sh | bash
 ```
 
 User-local (`~/.local`, `~/.config`), survives SteamOS updates. Uninstall: add `-s -- --uninstall`
-to the command above. Requires `libvulkan.so.1` and `libopenxr_loader.so.1` to already be present.
+to the command above. Requires `libvulkan.so.1` to be present; the OpenXR loader is provided by the
+runtime and need not be installed in a system library directory.
 Fetches a prebuilt `x86_64`/`aarch64` binary from the latest GitHub release (built by
 `.github/workflows/release.yml`); if you need a build from a specific commit instead, build from
 source -- see "Build from source" below -- then run `cmake --install build`, which does the same
