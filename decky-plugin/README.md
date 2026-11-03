@@ -97,21 +97,26 @@ how Decky's own code already talks to Steam, not a guess:
   for it yet (the actual gap [decky-loader#1004](https://github.com/SteamDeckHomebrew/decky-loader/pull/1004)
   is meant to close).
 
-To actually run that expression against a Frame headset, the practical recipe (same one the
-Steam Deck homebrew community already uses for desktop/flat-screen devtools access, not something
-specific to this plugin):
+**Note the distinction**: Steam's own in-VR/Big Picture "Web Browser" feature is a CEF webview
+embedded inside Steam's native UI shell, not a standalone browser application -- it almost
+certainly can't navigate to `chrome://inspect` at all, since that's a full-browser-application
+feature, not something exposed to embedded content views. What you actually need is a *standalone*
+Chromium/Chrome app. Frame has one, installed via SteamOS Desktop Mode -- which also means the
+whole thing can be done locally on the headset, no second PC or SSH tunnel required:
 
-1. Get a shell on the headset (SteamOS Developer Mode -> SSH, same as Steam Deck -- **not
-   independently confirmed that Frame exposes this identically to Deck**, since Frame hardware is
-   very new; treat this step as the main unverified assumption here).
-2. Tunnel the CDP port to your desktop: `ssh -L 8080:localhost:8080 <frame-ssh-target>`. This is
-   plain SSH port-forwarding, independent of Decky's own `cef_forward` setting (which is a
-   decky-settings-page toggle for the same thing over the network -- not useful here since reaching
-   that settings page is the whole problem being worked around).
-3. On your desktop, open Chrome/Chromium's `chrome://inspect/#devices`, add `localhost:8080` under
-   "Discover network targets", and open DevTools on the GamepadUI/SharedJSContext target found
-   above.
+1. Switch to Desktop Mode and open the installed Chromium.
+2. Navigate to `chrome://inspect/#devices` -- `localhost:8080` is already local, nothing to add.
+3. Find and open DevTools on the "GamepadUI" target described above (title `SharedJSContext` or
+   similar, URL containing `steamloopback.host`).
 4. In that DevTools window's Console tab, run `DFL.Navigation.Navigate("/decky/settings")`.
+
+If a device doesn't have a standalone browser available in Desktop Mode, or you'd just rather use
+your main desktop's DevTools than the headset's own display, the same thing works remotely instead:
+SSH into the device (SteamOS Developer Mode), `ssh -L 8080:localhost:8080 <target>` to tunnel the
+CDP port (plain SSH port-forwarding, independent of Decky's own `cef_forward` setting, which is a
+decky-settings-page toggle for the same thing over the network -- not useful here since reaching
+that settings page is the whole problem being worked around), then do the same
+`chrome://inspect/#devices` steps from your desktop's own browser instead.
 
 **What this does and doesn't confirm:** this reaches Decky's own settings page, not necessarily a
 direct route to *this* plugin's panel specifically -- no such per-plugin URL is documented or
