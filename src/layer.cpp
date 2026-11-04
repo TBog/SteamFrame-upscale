@@ -6,10 +6,16 @@
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
 
+#include <fcntl.h>
+#include <unistd.h>
+
 #include <algorithm>
+#include <atomic>
+#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <memory>
 #include <mutex>
@@ -86,6 +92,8 @@ struct SwapchainCtx {
     uint32_t ringHead = 0, ringTail = 0;
     double gpuMsSum = 0, gpuMsMax = 0;
     uint32_t gpuMsCount = 0;
+    bool loggedProfile = false;
+    int lastEnabled = -1;  // -1 = no frame seen yet; lets the first frame and each on/off flip be logged once
 };
 
 struct Dispatch {
@@ -110,6 +118,83 @@ std::filesystem::file_time_type g_cfgTime{};
 uint32_t g_frame = 0;
 bool g_profile = false;
 
+// Diagnostic log. The layer runs inside someone else's process (a game started from the headset's
+// dashboard) with no terminal attached, so a user whose install "does nothing" can't otherwise tell
+// "never loaded" from "loaded but never saw a passthrough swapchain". Each notable event is one line
+// appended to SF_LOG, else $XDG_CACHE_HOME (or ~/.cache)/steamframe-passthrough/layer.log;
+// scripts/steamframe-passthrough-ctl shows it. Events are rare (a handful per app run), so the file
+// is reopened per line, and each line is a single O_APPEND write so concurrent processes don't mix.
+constexpr uintmax_t kMaxLogBytes = 256 * 1024;
+std::string g_logPath;
+std::once_flag g_logOnce;
+
+void logInit() {
+    std::call_once(g_logOnce, [] {
+        if (const char* e = std::getenv("SF_LOG"); e && *e) {
+            g_logPath = e;
+        } else if (const char* x = std::getenv("XDG_CACHE_HOME"); x && *x) {
+            g_logPath = std::string(x) + "/steamframe-passthrough/layer.log";
+        } else if (const char* h = std::getenv("HOME"); h && *h) {
+            g_logPath = std::string(h) + "/.cache/steamframe-passthrough/layer.log";
+        }
+        if (g_logPath.empty()) return;
+        std::error_code ec;
+        std::filesystem::create_directories(std::filesystem::path(g_logPath).parent_path(), ec);
+        // Every OpenXR app loads this layer, so cap the file instead of letting it grow forever.
+        auto size = std::filesystem::file_size(g_logPath, ec);
+        if (!ec && size > kMaxLogBytes) std::filesystem::resize_file(g_logPath, 0, ec);
+    });
+}
+
+__attribute__((format(printf, 1, 2))) void logLine(const char* fmt, ...) {
+    if (g_logPath.empty()) return;
+    char msg[512];
+    va_list ap;
+    va_start(ap, fmt);
+    std::vsnprintf(msg, sizeof msg, fmt, ap);
+    va_end(ap);
+    char comm[32] = "?";
+    if (FILE* f = std::fopen("/proc/self/comm", "r")) {
+        if (std::fgets(comm, sizeof comm, f)) comm[std::strcspn(comm, "\n")] = 0;
+        std::fclose(f);
+    }
+    char ts[32] = "";
+    time_t now = std::time(nullptr);
+    tm local{};
+    if (localtime_r(&now, &local)) std::strftime(ts, sizeof ts, "%Y-%m-%d %H:%M:%S", &local);
+    char line[768];
+    int n = std::snprintf(line, sizeof line, "%s [%s:%d] %s\n", ts, comm, int(getpid()), msg);
+    if (n <= 0) return;
+    if (n >= int(sizeof line)) n = int(sizeof line) - 1;
+    int fd = open(g_logPath.c_str(), O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0644);
+    if (fd < 0) return;
+    ssize_t w = write(fd, line, size_t(n));
+    (void)w;
+    close(fd);
+}
+
+// Name for the swapchain formats an app is likely to pick, so the log is readable without a table.
+const char* vkFormatName(int64_t f) {
+    switch (VkFormat(f)) {
+        case VK_FORMAT_R8_UNORM: return "R8_UNORM";
+        case VK_FORMAT_R8_SRGB: return "R8_SRGB";
+        case VK_FORMAT_R8G8_UNORM: return "R8G8_UNORM";
+        case VK_FORMAT_R8G8B8A8_UNORM: return "R8G8B8A8_UNORM";
+        case VK_FORMAT_R8G8B8A8_SRGB: return "R8G8B8A8_SRGB";
+        case VK_FORMAT_B8G8R8A8_UNORM: return "B8G8R8A8_UNORM";
+        case VK_FORMAT_B8G8R8A8_SRGB: return "B8G8R8A8_SRGB";
+        case VK_FORMAT_A2B10G10R10_UNORM_PACK32: return "A2B10G10R10_UNORM_PACK32";
+        case VK_FORMAT_R16G16B16A16_SFLOAT: return "R16G16B16A16_SFLOAT";
+        default: return "other";
+    }
+}
+
+void logConfig(const char* what) {
+    logLine("%s %s: enabled=%g temporal_alpha=%g motion_threshold=%g sharpness_weight=%g noise_floor=%g", what,
+            g_cfgPath.c_str(), g_cfg.enabled, g_cfg.temporal_alpha, g_cfg.motion_threshold, g_cfg.sharpness_weight,
+            g_cfg.noise_floor);
+}
+
 void loadConfig() {
     if (const char* e = std::getenv("SF_CONFIG")) g_cfgPath = e;
     else if (std::filesystem::exists("config.ini")) g_cfgPath = "config.ini";
@@ -119,6 +204,9 @@ void loadConfig() {
     if (!g_cfgPath.empty() && std::filesystem::exists(g_cfgPath, ec)) {
         g_cfg = sf::Config::load(g_cfgPath);
         g_cfgTime = std::filesystem::last_write_time(g_cfgPath, ec);
+        logConfig("config loaded:");
+    } else {
+        logLine("no config file at '%s'; using built-in defaults (filter on)", g_cfgPath.c_str());
     }
 }
 
@@ -130,6 +218,7 @@ void maybeReloadConfig() {
     if (!ec && t != g_cfgTime) {
         g_cfg = sf::Config::load(g_cfgPath);
         g_cfgTime = t;
+        logConfig("config reloaded:");
     }
 }
 
@@ -159,6 +248,11 @@ void destroySessionCtx(SessionCtx& s) {
     s.session = keep;
 }
 
+bool sessionFail(const char* why) {
+    logLine("session setup failed, layer inactive for this session: %s", why);
+    return false;
+}
+
 bool initSessionCtx(SessionCtx& s, const XrGraphicsBindingVulkanKHR& b) {
     s.instance = b.instance;
     s.phys = b.physicalDevice;
@@ -170,7 +264,8 @@ bool initSessionCtx(SessionCtx& s, const XrGraphicsBindingVulkanKHR& b) {
     vkGetPhysicalDeviceQueueFamilyProperties(s.phys, &n, nullptr);
     std::vector<VkQueueFamilyProperties> qf(n);
     vkGetPhysicalDeviceQueueFamilyProperties(s.phys, &n, qf.data());
-    if (s.family >= n || !(qf[s.family].queueFlags & VK_QUEUE_COMPUTE_BIT)) return false;
+    if (s.family >= n || !(qf[s.family].queueFlags & VK_QUEUE_COMPUTE_BIT))
+        return sessionFail("the app's queue family has no compute support");
     VkPhysicalDeviceProperties pp;
     vkGetPhysicalDeviceProperties(s.phys, &pp);
     s.tsPeriod = pp.limits.timestampPeriod;
@@ -178,18 +273,20 @@ bool initSessionCtx(SessionCtx& s, const XrGraphicsBindingVulkanKHR& b) {
 
     VkPhysicalDeviceFeatures feat;
     vkGetPhysicalDeviceFeatures(s.phys, &feat);
-    if (!feat.shaderStorageImageExtendedFormats) return false;
-    if (!formatUsable(s.phys, kSwapFormat) || !formatUsable(s.phys, kHistFormat)) return false;
+    if (!feat.shaderStorageImageExtendedFormats) return sessionFail("device lacks shaderStorageImageExtendedFormats");
+    if (!formatUsable(s.phys, kSwapFormat) || !formatUsable(s.phys, kHistFormat))
+        return sessionFail("device cannot use R8_UNORM / R16_SFLOAT as storage images");
 
     VkCommandPoolCreateInfo pi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     pi.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     pi.queueFamilyIndex = s.family;
-    if (vkCreateCommandPool(s.device, &pi, nullptr, &s.pool) != VK_SUCCESS) return false;
+    if (vkCreateCommandPool(s.device, &pi, nullptr, &s.pool) != VK_SUCCESS) return sessionFail("vkCreateCommandPool failed");
 
     VkShaderModuleCreateInfo sm{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     sm.codeSize = sizeof(denoise_cas_spv);
     sm.pCode = denoise_cas_spv;
-    if (vkCreateShaderModule(s.device, &sm, nullptr, &s.shader) != VK_SUCCESS) return false;
+    if (vkCreateShaderModule(s.device, &sm, nullptr, &s.shader) != VK_SUCCESS)
+        return sessionFail("vkCreateShaderModule failed");
 
     VkDescriptorSetLayoutBinding bind[4]{};
     for (uint32_t i = 0; i < 4; ++i) {
@@ -201,7 +298,8 @@ bool initSessionCtx(SessionCtx& s, const XrGraphicsBindingVulkanKHR& b) {
     VkDescriptorSetLayoutCreateInfo dl{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     dl.bindingCount = 4;
     dl.pBindings = bind;
-    if (vkCreateDescriptorSetLayout(s.device, &dl, nullptr, &s.setLayout) != VK_SUCCESS) return false;
+    if (vkCreateDescriptorSetLayout(s.device, &dl, nullptr, &s.setLayout) != VK_SUCCESS)
+        return sessionFail("vkCreateDescriptorSetLayout failed");
 
     VkPushConstantRange pc{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(PushConstants)};
     VkPipelineLayoutCreateInfo pl{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
@@ -209,13 +307,16 @@ bool initSessionCtx(SessionCtx& s, const XrGraphicsBindingVulkanKHR& b) {
     pl.pSetLayouts = &s.setLayout;
     pl.pushConstantRangeCount = 1;
     pl.pPushConstantRanges = &pc;
-    if (vkCreatePipelineLayout(s.device, &pl, nullptr, &s.pipeLayout) != VK_SUCCESS) return false;
+    if (vkCreatePipelineLayout(s.device, &pl, nullptr, &s.pipeLayout) != VK_SUCCESS)
+        return sessionFail("vkCreatePipelineLayout failed");
 
     VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
     ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT,
                 s.shader, "main", nullptr};
     ci.layout = s.pipeLayout;
-    return vkCreateComputePipelines(s.device, VK_NULL_HANDLE, 1, &ci, nullptr, &s.pipeline) == VK_SUCCESS;
+    if (vkCreateComputePipelines(s.device, VK_NULL_HANDLE, 1, &ci, nullptr, &s.pipeline) != VK_SUCCESS)
+        return sessionFail("vkCreateComputePipelines failed");
+    return true;
 }
 
 VkImageView makeView(VkDevice d, VkImage img, VkFormat f, uint32_t layer) {
@@ -351,6 +452,12 @@ void collectTimestamps(SwapchainCtx& w, ImageRes& im) {
             std::fprintf(stderr, "[%s] GPU %.3f ms avg, %.3f ms max over %u frames (%u layer(s)) %s\n", kLayerName,
                          w.gpuMsSum / w.gpuMsCount, w.gpuMsMax, w.gpuMsCount, w.layers,
                          w.gpuMsMax > 2.0 ? "OVER 2ms BUDGET" : "ok");
+        if (!w.loggedProfile) {  // only the first window: later ones would grow the log without bound
+            w.loggedProfile = true;
+            logLine("GPU time over the first %u processed frames: %.3f ms avg, %.3f ms max (%u layer(s)) %s",
+                    w.gpuMsCount, w.gpuMsSum / w.gpuMsCount, w.gpuMsMax, w.layers,
+                    w.gpuMsMax > 2.0 ? "OVER 2ms BUDGET" : "ok");
+        }
         w.gpuMsSum = 0;
         w.gpuMsCount = 0;
         w.gpuMsMax = 0;
@@ -440,20 +547,25 @@ void freeSwapchain(const std::shared_ptr<SwapchainCtx>& w) {
 XRAPI_ATTR XrResult XRAPI_CALL hCreateSession(XrInstance inst, const XrSessionCreateInfo* ci, XrSession* out) {
     XrResult r = g_next.CreateSession(inst, ci, out);
     if (XR_FAILED(r)) return r;
+    bool sawVulkan = false;
     for (auto n = static_cast<const XrBaseInStructure*>(ci->next); n; n = n->next) {
         if (n->type == XR_TYPE_GRAPHICS_BINDING_VULKAN_KHR) {  // the VULKAN2 binding is an alias of this
+            sawVulkan = true;
             auto sc = std::make_shared<SessionCtx>();
             sc->session = *out;
             sc->ok = initSessionCtx(*sc, *reinterpret_cast<const XrGraphicsBindingVulkanKHR*>(n));
             if (!sc->ok) {
                 std::fprintf(stderr, "[%s] Vulkan setup unsupported; passthrough denoise disabled\n", kLayerName);
                 destroySessionCtx(*sc);
+            } else {
+                logLine("session created: Vulkan compute path ready (queue family %u)", sc->family);
             }
             std::lock_guard<std::mutex> lk(g_mutex);
             g_sessions[*out] = sc;
             break;
         }
     }
+    if (!sawVulkan) logLine("session created without a Vulkan graphics binding; layer inactive for this session");
     return r;
 }
 
@@ -492,9 +604,20 @@ XRAPI_ATTR XrResult XRAPI_CALL hCreateSwapchain(XrSession session, const XrSwapc
         auto it = g_sessions.find(session);
         if (it != g_sessions.end()) sc = it->second;
     }
-    const bool want = sc && sc->ok && ci->format == int64_t(kSwapFormat) && ci->arraySize <= kMaxLayers &&
-                      ci->sampleCount == 1 && ci->faceCount == 1 && ci->mipCount == 1 &&
-                      (ci->usageFlags & XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT);
+    const char* skip = nullptr;  // why this swapchain is left alone; null = we process it
+    if (!sc) skip = "no Vulkan session";
+    else if (!sc->ok) skip = "session setup failed";
+    else if (ci->format != int64_t(kSwapFormat)) skip = "format is not R8_UNORM";
+    else if (ci->arraySize > kMaxLayers) skip = "arraySize > 2";
+    else if (ci->sampleCount != 1 || ci->faceCount != 1 || ci->mipCount != 1) skip = "multisampled, cube or mipmapped";
+    else if (!(ci->usageFlags & XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT)) skip = "no color-attachment usage";
+    const bool want = skip == nullptr;
+    // An app can create many swapchains; log the first few, which is plenty to see what it uses.
+    static std::atomic<int> loggedSwapchains{0};
+    if (loggedSwapchains.fetch_add(1) < 24)
+        logLine("swapchain %ux%u format=%lld(%s) arraySize=%u usage=0x%llx: %s", ci->width, ci->height,
+                (long long)ci->format, vkFormatName(ci->format), ci->arraySize,
+                (unsigned long long)ci->usageFlags, want ? "processing" : skip);
     XrSwapchainCreateInfo mod = *ci;
     if (want) mod.usageFlags |= XR_SWAPCHAIN_USAGE_UNORDERED_ACCESS_BIT;
     XrResult r = g_next.CreateSwapchain(session, want ? &mod : ci, out);
@@ -542,8 +665,12 @@ XRAPI_ATTR XrResult XRAPI_CALL hEnumerateSwapchainImages(XrSwapchain sw, uint32_
     for (uint32_t i = 0; i < n; ++i) v[i] = reinterpret_cast<XrSwapchainImageVulkanKHR*>(images)[i].image;
     if (!buildSwapchainRes(*w, v.data(), n)) {
         std::fprintf(stderr, "[%s] swapchain resource allocation failed; swapchain passes through\n", kLayerName);
+        logLine("swapchain %p: resource allocation failed (%u images); frames pass through untouched",
+                static_cast<void*>(w->handle), n);
         freeSwapchain(w);
         w->process = false;
+    } else {
+        logLine("swapchain %p: %u images ready", static_cast<void*>(w->handle), n);
     }
     return r;
 }
@@ -579,6 +706,12 @@ XRAPI_ATTR XrResult XRAPI_CALL hReleaseSwapchainImage(XrSwapchain sw, const XrSw
     if (w && idx < w->images.size()) {
         ImageRes& im = w->images[idx];
         SessionCtx& s = *w->sc;
+        const int enabledNow = cfg.enabled < 0.5f ? 0 : 1;
+        if (w->lastEnabled != enabledNow) {
+            logLine("swapchain %p: %s", static_cast<void*>(w->handle),
+                    enabledNow ? "filtering frames" : "bypassed (enabled = 0): frames pass through untouched");
+            w->lastEnabled = enabledNow;
+        }
         if (cfg.enabled < 0.5f) {  // raw passthrough: skip the dispatch, just drain any in-flight work
             if (im.submitted) {
                 vkWaitForFences(s.device, 1, &im.fence, VK_TRUE, UINT64_MAX);
@@ -639,8 +772,11 @@ XRAPI_ATTR XrResult XRAPI_CALL hGetInstanceProcAddr(XrInstance inst, const char*
 
 XRAPI_ATTR XrResult XRAPI_CALL hCreateApiLayerInstance(const XrInstanceCreateInfo* info,
                                                        const XrApiLayerCreateInfo* layerInfo, XrInstance* instance) {
-    if (!layerInfo || !layerInfo->nextInfo || std::strcmp(layerInfo->nextInfo->layerName, kLayerName) != 0)
+    logInit();
+    if (!layerInfo || !layerInfo->nextInfo || std::strcmp(layerInfo->nextInfo->layerName, kLayerName) != 0) {
+        logLine("layer load failed: the loader's layer chain does not name %s", kLayerName);
         return XR_ERROR_INITIALIZATION_FAILED;
+    }
     XrApiLayerCreateInfo next = *layerInfo;
     next.nextInfo = layerInfo->nextInfo->next;
     PFN_xrGetInstanceProcAddr gipa = layerInfo->nextInfo->nextGetInstanceProcAddr;
@@ -656,6 +792,7 @@ XRAPI_ATTR XrResult XRAPI_CALL hCreateApiLayerInstance(const XrInstanceCreateInf
         XrResult lr = gipa(*instance, "xr" #n, reinterpret_cast<PFN_xrVoidFunction*>(&g_next.n));          \
         if (XR_FAILED(lr) || !g_next.n) {                                                                  \
             std::fprintf(stderr, "[%s] failed to resolve xr" #n " (XrResult %d)\n", kLayerName, (int)lr);  \
+            logLine("layer load failed: could not resolve xr" #n " (XrResult %d)", (int)lr);               \
             ok = false;                                                                                    \
         }                                                                                                   \
     } while (0)
@@ -678,6 +815,7 @@ XRAPI_ATTR XrResult XRAPI_CALL hCreateApiLayerInstance(const XrInstanceCreateInf
         g_next = Dispatch{};
         return XR_ERROR_INITIALIZATION_FAILED;
     }
+    logLine("layer loaded into this OpenXR app");
     loadConfig();
     return XR_SUCCESS;
 }

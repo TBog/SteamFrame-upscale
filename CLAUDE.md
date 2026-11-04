@@ -21,7 +21,7 @@ sudo apt install libvulkan-dev libopenxr-dev glslang-tools   # Debian/Ubuntu
 # or: sudo pacman -S --needed base-devel cmake vulkan-headers vulkan-icd-loader openxr glslang  # Arch
 
 cmake -B build && cmake --build build -j
-ctest --test-dir build --output-on-failure      # CPU pipeline tests + the layer_smoke integration test
+ctest --test-dir build --output-on-failure      # pipeline (CPU), ctl (launcher script), layer_smoke, layer_smoke_implicit
 build/test_pipeline                              # run the CPU test binary directly (more verbose output)
 ```
 
@@ -31,9 +31,16 @@ has no graphics-API dependency, so that test runs anywhere (including this Windo
 WSL for the full build). There is no single-test filter for `test_pipeline.cpp`; it's one `main()`
 with sequential `CHECK` blocks per scenario (config parsing, temporal denoise variance, edge
 sharpening, ghosting, per-eye independence, teardown cycles, CPU timing) — comment out blocks
-locally if iterating on one. `ctest -R layer_smoke` isolates the integration test; it's skipped
-(not failed) with CTest exit code 77 on a machine with no usable Vulkan device — see
-`tests/integration/README.md`.
+locally if iterating on one. `ctest -R layer_smoke` isolates the two integration tests (explicit
+activation, and `layer_smoke_implicit` for an installed-style manifest); they're skipped (not failed)
+with CTest exit code 77 on a machine with no usable Vulkan device — see `tests/integration/README.md`.
+`ctest -R ctl` runs `tests/ctl_test.sh` (bash only; no GPU) against a throwaway `HOME`.
+
+Working on Windows with the full build in WSL: with `core.autocrlf=true` the Windows checkout can hold
+CRLF copies of the shell scripts, which bash rejects. `.gitattributes` pins `*.sh`, `get.sh`,
+`scripts/steamframe-passthrough-ctl` and `*.desktop` to LF so new checkouts are fine; a stale working
+copy may still need `tr -d '\r'`. Inside WSL a corporate `http_proxy` may be set — a local test server
+on `127.0.0.1` then needs `no_proxy=127.0.0.1` (curl otherwise gets a proxy 502).
 
 Runtime env vars for the built layer: `XR_API_LAYER_PATH=<build dir>`,
 `XR_ENABLE_API_LAYERS=XR_APILAYER_STEAMFRAME_passthrough_denoise`, `SF_CONFIG=<path>` (config.ini,
@@ -141,9 +148,32 @@ install, only that it builds and its ini-parsing logic was unit-verified standal
   `.github/workflows/deploy-pages.yml` publishes to GitHub Pages for the documented
   `curl ... | bash` one-liner) — update both together.
 - The installed manifest (written by both `CMakeLists.txt`'s install step and `get.sh`) is an
-  *implicit* layer with `enable_environment`/`disable_environment` guards, unlike the dev-build
-  manifest in `layer/` which is explicit-only — intentional difference between "installed for daily
-  use, opt-in via env var" and "loaded only when testing from the build dir."
+  *implicit* layer (it lives in `implicit.d/`) with only a `disable_environment` opt-out, unlike the
+  dev-build manifest in `layer/` which is explicit-only — intentional difference between "installed
+  for daily use, loaded into every OpenXR app" and "loaded only when testing from the build dir."
+  **It must never declare `enable_environment`**: the loader (`manifest_file.cpp`) silently skips an
+  implicit layer that declares one unless that variable is set in the app's environment, which
+  nobody can do for apps started from a headset's dashboard. An earlier version did exactly that, so
+  `get.sh` installed a layer that never loaded (reproduced on Ubuntu's loader and confirmed in the
+  loader source). The manifest JSON exists in two places — `SF_IMPLICIT_MANIFEST` in
+  `CMakeLists.txt` and the heredoc in `get.sh` — keep them in sync; `ctest`'s `layer_smoke_implicit`
+  (installed-style manifest, no environment variables at all) is what catches this class of bug.
+- **Launchers** (`scripts/steamframe-passthrough-ctl` + `contrib/steamframe-passthrough-{toggle,status}.desktop`):
+  the layer is not a process, so there is nothing to "start"; the other Frame apps (the sibling
+  `sasaken1102r/*` repos) each ship a `.desktop` file because they *are* processes. Ours exist so the
+  SteamVR dashboard's `+` list (which lists `~/.local/share/applications/*.desktop`) can show a
+  status report and flip `enabled` in `config.ini` without a PC. They run the script in Konsole
+  (`Exec=konsole -e <abs path> ...`; the installer substitutes the path since Steam may launch
+  without `~/.local/bin` in `PATH`). Unverified on a real Frame: that the `+` list launches
+  `konsole -e ...` the way it launches the siblings' binaries. `get.sh` installs them non-fatally
+  (the layer works without them).
+- **Layer log** (`logLine()` in `src/layer.cpp`, default `~/.cache/steamframe-passthrough/layer.log`,
+  override `SF_LOG`): one line per notable event (loaded, config, session ready/failed with reason,
+  each swapchain with its numeric format and why it is/isn't processed, filter on/off, first GPU
+  timing). It is the only way to tell "never loaded" from "loaded but never saw an R8_UNORM
+  swapchain" on a headset, and `steamframe-passthrough-ctl status` keys its verdict on these exact
+  phrases (`filtering frames`, `: processing`, `bypassed (enabled = 0)`, `session setup failed`,
+  `swapchain .*format=`), as does `smoke_test.cpp` — change a message and you change those too.
 - `get.sh`'s own fallback path (no `SF_LIB_PATH`, no local `build/`) fetches
   `libsteamframe_layer-$(uname -m).so` from `releases/latest/download/` — i.e. it needs an actual
   GitHub Release with that asset attached. `.github/workflows/release.yml` builds and publishes

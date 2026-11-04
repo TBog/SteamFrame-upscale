@@ -8,6 +8,13 @@ enable_testing()
 add_executable(test_pipeline tests/test_pipeline.cpp)
 add_test(NAME pipeline COMMAND test_pipeline)
 
+# scripts/steamframe-passthrough-ctl edits config.ini and reads the layer's log; needs only bash.
+find_program(SF_BASH bash)
+if(SF_BASH)
+  add_test(NAME ctl COMMAND ${SF_BASH} ${CMAKE_SOURCE_DIR}/tests/ctl_test.sh
+           ${CMAKE_SOURCE_DIR}/scripts/steamframe-passthrough-ctl)
+endif()
+
 # OpenXR API layer (needs Vulkan + OpenXR dev packages and glslangValidator:
 #   apt install libvulkan-dev libopenxr-dev glslang-tools)
 find_package(Vulkan)
@@ -34,6 +41,28 @@ else()
   message(STATUS "Vulkan/OpenXR/glslang not found: skipping steamframe_layer")
 endif()
 
+# The manifest an installed layer is registered with (get.sh writes the same JSON; keep them in sync).
+# It is an implicit layer, so the loader enables it for every OpenXR app by default. There is
+# deliberately no "enable_environment": the loader silently skips an implicit layer that declares one
+# unless that variable is set in the app's environment, so an installed layer would do nothing on a
+# headset where apps are started from the dashboard (reproduced by layer_smoke_implicit below).
+# "disable_environment" is required for implicit layers and is the per-app opt-out.
+set(SF_IMPLICIT_MANIFEST [=[{
+  "file_format_version": "1.0.0",
+  "api_layer": {
+    "name": "XR_APILAYER_STEAMFRAME_passthrough_denoise",
+    "library_path": "@SF_LIB@",
+    "api_version": "1.0",
+    "implementation_version": "1",
+    "description": "Temporal denoise + CAS for monochrome passthrough",
+    "functions": {
+      "xrNegotiateLoaderApiLayerInterface": "xrNegotiateLoaderApiLayerInterface"
+    },
+    "disable_environment": "DISABLE_XR_APILAYER_STEAMFRAME_passthrough_denoise"
+  }
+}
+]=])
+
 # `make install` mirrors get.sh: user-local, no root needed (SteamOS-safe).
 # Override with -DSF_INSTALL_HOME=<dir>; defaults to $HOME.
 if(TARGET steamframe_layer)
@@ -55,25 +84,20 @@ if(TARGET steamframe_layer)
   # for it is perfectly valid -- confirmed by this exact collision breaking the layer_smoke ctest
   # on Ubuntu while passing on a newer loader (Arch's openxr 1.1.60) that's lenient about it.
   set(SF_INSTALL_MANIFEST ${CMAKE_BINARY_DIR}/install-staging/steamframe_passthrough.json)
-  file(WRITE ${SF_INSTALL_MANIFEST}
-"{
-  \"file_format_version\": \"1.0.0\",
-  \"api_layer\": {
-    \"name\": \"XR_APILAYER_STEAMFRAME_passthrough_denoise\",
-    \"library_path\": \"${SF_LIB_DIR}/libsteamframe_layer.so\",
-    \"api_version\": \"1.0\",
-    \"implementation_version\": \"1\",
-    \"description\": \"Temporal denoise + CAS for monochrome passthrough\",
-    \"functions\": {
-      \"xrNegotiateLoaderApiLayerInterface\": \"xrNegotiateLoaderApiLayerInterface\"
-    },
-    \"disable_environment\": \"DISABLE_XR_APILAYER_STEAMFRAME_passthrough_denoise\",
-    \"enable_environment\": \"ENABLE_XR_APILAYER_STEAMFRAME_passthrough_denoise\"
-  }
-}
-")
+  string(REPLACE "@SF_LIB@" "${SF_LIB_DIR}/libsteamframe_layer.so" _sf_manifest "${SF_IMPLICIT_MANIFEST}")
+  file(WRITE ${SF_INSTALL_MANIFEST} "${_sf_manifest}")
   install(FILES ${SF_INSTALL_MANIFEST}
           DESTINATION "${_sf_home}/.local/share/openxr/1/api_layers/implicit.d")
+  # Launchers for the SteamVR dashboard's "+" list, same as get.sh installs: a small script plus two
+  # .desktop entries that run it in Konsole. configure_file fills in the script's absolute path
+  # (Steam may start launchers without ~/.local/bin in PATH).
+  install(PROGRAMS scripts/steamframe-passthrough-ctl DESTINATION "${_sf_home}/.local/bin")
+  set(CTL "${_sf_home}/.local/bin/steamframe-passthrough-ctl")
+  foreach(_d steamframe-passthrough-toggle steamframe-passthrough-status)
+    configure_file(contrib/${_d}.desktop ${CMAKE_BINARY_DIR}/install-staging/${_d}.desktop @ONLY)
+    install(FILES ${CMAKE_BINARY_DIR}/install-staging/${_d}.desktop
+            DESTINATION "${_sf_home}/.local/share/applications")
+  endforeach()
   # Keep an existing user config untouched.
   install(CODE "
     set(_cfg \"${_sf_home}/.config/steamframe-passthrough/config.ini\")
@@ -109,9 +133,23 @@ if(TARGET steamframe_layer AND OPENXR_LOADER)
 }
 ")
 
+  # Explicit activation, as a developer uses it (SETUP.md): XR_API_LAYER_PATH + XR_ENABLE_API_LAYERS.
   add_test(NAME layer_smoke COMMAND layer_smoke_test)
   set_tests_properties(layer_smoke PROPERTIES
-    ENVIRONMENT "XR_RUNTIME_JSON=${CMAKE_BINARY_DIR}/integration/active_runtime.json;XR_API_LAYER_PATH=${CMAKE_BINARY_DIR};XR_ENABLE_API_LAYERS=XR_APILAYER_STEAMFRAME_passthrough_denoise;SF_CONFIG=${CMAKE_BINARY_DIR}/integration/smoke_config.ini"
+    ENVIRONMENT "XR_RUNTIME_JSON=${CMAKE_BINARY_DIR}/integration/active_runtime.json;XR_API_LAYER_PATH=${CMAKE_BINARY_DIR};XR_ENABLE_API_LAYERS=XR_APILAYER_STEAMFRAME_passthrough_denoise;SF_CONFIG=${CMAKE_BINARY_DIR}/integration/smoke_config.ini;SF_LOG=${CMAKE_BINARY_DIR}/integration/layer.log"
+    SKIP_RETURN_CODE 77)
+
+  # Installed activation, as a user gets it from get.sh / `cmake --install`: the same implicit
+  # manifest, pointing at the freshly built library, in the XDG location the loader scans -- and no
+  # XR_API_LAYER_PATH, XR_ENABLE_API_LAYERS or ENABLE_* variable at all. This is the test that would
+  # have caught the installed layer being silently skipped by the loader.
+  string(REPLACE "@SF_LIB@" "$<TARGET_FILE:steamframe_layer>" _sf_manifest_test "${SF_IMPLICIT_MANIFEST}")
+  file(GENERATE
+       OUTPUT ${CMAKE_BINARY_DIR}/integration/xdg/openxr/1/api_layers/implicit.d/steamframe_passthrough.json
+       CONTENT "${_sf_manifest_test}")
+  add_test(NAME layer_smoke_implicit COMMAND layer_smoke_test)
+  set_tests_properties(layer_smoke_implicit PROPERTIES
+    ENVIRONMENT "XR_RUNTIME_JSON=${CMAKE_BINARY_DIR}/integration/active_runtime.json;XDG_DATA_HOME=${CMAKE_BINARY_DIR}/integration/xdg;SF_CONFIG=${CMAKE_BINARY_DIR}/integration/smoke_config_implicit.ini;SF_LOG=${CMAKE_BINARY_DIR}/integration/layer_implicit.log"
     SKIP_RETURN_CODE 77)
 else()
   message(STATUS "OpenXR loader library not found: skipping layer_smoke integration test")

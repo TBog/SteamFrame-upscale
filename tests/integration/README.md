@@ -28,8 +28,17 @@ the test app against):
 
 ```bash
 cmake -B build && cmake --build build -j
-ctest --test-dir build -R layer_smoke --output-on-failure
+ctest --test-dir build -R layer_smoke --output-on-failure   # runs both tests below
 ```
+
+The same `layer_smoke_test` binary runs twice, differing only in how the layer is made visible:
+
+- `layer_smoke` -- explicit, as a developer uses it: `XR_API_LAYER_PATH` + `XR_ENABLE_API_LAYERS`.
+- `layer_smoke_implicit` -- installed, as `get.sh` / `cmake --install` leave it: the same implicit
+  manifest (CMake's `SF_IMPLICIT_MANIFEST`, pointing at the fresh build) under `XDG_DATA_HOME`, and
+  **no** `XR_API_LAYER_PATH`, `XR_ENABLE_API_LAYERS` or `ENABLE_*` variable. This is the regression
+  test for the installed layer being silently skipped by the loader (it fails if `enable_environment`
+  is put back in the manifest).
 
 If no Vulkan device is present, or it lacks `shaderStorageImageExtendedFormats` (the same
 requirement `src/layer.cpp` itself checks before enabling), the test is **skipped** (exit code 77,
@@ -44,11 +53,17 @@ XR_RUNTIME_JSON=$PWD/build/integration/active_runtime.json \
 XR_API_LAYER_PATH=$PWD/build \
 XR_ENABLE_API_LAYERS=XR_APILAYER_STEAMFRAME_passthrough_denoise \
 SF_CONFIG=$PWD/build/integration/smoke_config.ini \
+SF_LOG=$PWD/build/integration/layer.log \
 build/layer_smoke_test
 ```
 
-`SF_CONFIG` must point at a writable path (it need not exist yet -- the test creates it for the
-bypass phase); `ctest` points it at `build/integration/smoke_config.ini`.
+`SF_CONFIG` and `SF_LOG` must point at writable paths; the test deletes both at startup (a leftover
+`enabled = 0` from a previous run would otherwise start the next one bypassed) and creates them as it
+goes. At the end it reads `SF_LOG` and requires the layer's diagnostic log to record the whole run:
+loaded, session ready, an `R8_UNORM` swapchain `processing`, `images ready`, `filtering frames`,
+`config reloaded:` and `bypassed (enabled = 0)`. `scripts/steamframe-passthrough-ctl status` keys on
+the same phrases, so a message change in `src/layer.cpp` shows up here first. `ctest` points both at
+files under `build/integration/`.
 
 `smoke_test.cpp` deliberately does **not** also set `enabledApiLayerNames` in its
 `XrInstanceCreateInfo` -- the layer is activated purely through `XR_ENABLE_API_LAYERS`, matching

@@ -33,10 +33,20 @@ The OpenXR loader scans these manifest directories (`$XDG_*` fall back to the de
 | Implicit layers | same, with `implicit.d/` |
 | Override | `XR_API_LAYER_PATH` (colon-separated directories; searched in addition to the above) |
 
-Our manifest does not declare `enable_environment`, so it is an **explicit** layer: it is
-loaded only when requested via `XR_ENABLE_API_LAYERS` (or by the application). Put it in
-`explicit.d/`. An implicit layer (`implicit.d/`) is loaded for every app, but must also
-carry `disable_environment` in the manifest; add that only if you want always-on behaviour.
+Whether a layer is explicit or implicit is decided by **which directory its manifest is in**, not by
+anything inside it:
+
+- `explicit.d/`: loaded only when requested, via `XR_ENABLE_API_LAYERS` or by the application. This is
+  what the manual steps below use, and what `layer/XR_APILAYER_SteamFrame_passthrough_denoise.json`
+  (the dev manifest copied into the build dir) is meant for.
+- `implicit.d/`: loaded into every OpenXR app with no action from the app or the user. The manifest
+  must carry `disable_environment` (the per-app opt-out: the layer is skipped when that variable is
+  set), or the loader rejects it. **Do not add `enable_environment` here**: per the loader source
+  (`manifest_file.cpp`), an implicit layer that declares one is silently skipped (an Info-level log
+  line, nothing more) unless that variable is set in the app's environment. That is how an earlier
+  `get.sh` installed a layer that never loaded; `layer_smoke_implicit` in `ctest` now guards it.
+  `get.sh` and `cmake --install` both register the layer this way, so a normal install needs no
+  environment variables at all.
 
 ### Transient test (no install)
 
@@ -183,6 +193,21 @@ passthrough swapchain uses another format, nothing is denoised: check with
 `XR_LOADER_DEBUG=all` / the app's swapchain format list, and confirm the app picks `R8_UNORM`
 from `xrEnumerateSwapchainFormats`. A `swapchain resource allocation failed` message means the
 format lacks `STORAGE_IMAGE` support on your GPU.
+
+### Installed, but it seems to do nothing: read the layer log first
+
+The layer appends what it does to `~/.cache/steamframe-passthrough/layer.log` (or `$SF_LOG`), and
+`steamframe-passthrough-ctl status` (the **Passthrough Denoise: Status** entry in the SteamVR
+dashboard's **+** list) prints the tail with a one-line verdict. Each log line is one stage, so the
+last stage reached tells you where it stops:
+
+| What the log shows | Meaning |
+|---|---|
+| file missing or empty | No OpenXR app has loaded the layer. Restart the app (it must start *after* the install); check the manifest exists and has no `enable_environment`; `XR_LOADER_DEBUG=all` shows the loader's view. |
+| `layer loaded ...` then nothing | Loaded, but the app never created a session through a Vulkan binding (OpenGL?) or has not got that far. |
+| `session setup failed ... <reason>` | The GPU setup failed; the reason says which requirement (compute queue, `shaderStorageImageExtendedFormats`, R8/R16F storage support, or a Vulkan call). |
+| `swapchain WxH format=N(...) ...: <reason>` for every swapchain | Loaded and running, but no swapchain is `R8_UNORM` (format 9), the only one it filters. The `format=` values show what the app does create; if the passthrough is not an app swapchain at all, an API layer cannot reach it. |
+| `...: processing` then `N images ready` then `filtering frames` | Working. |
 
 ### Loader cannot find `libsteamframe_layer.so`
 

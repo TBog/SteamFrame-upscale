@@ -1,0 +1,7 @@
+# These are run on the headset (Linux) as-is; a CRLF checkout on Windows (core.autocrlf) would break
+# them with "bad interpreter" / stray \r in values. Keep LF regardless of checkout settings.
+*.sh text eol=lf
+get.sh text eol=lf
+docs/get.sh text eol=lf
+scripts/steamframe-passthrough-ctl text eol=lf
+*.desktop text eol=lf

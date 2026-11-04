@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Passthrough Denoise: On/Off
+Comment=Switch the passthrough denoise filter on or off (off = raw passthrough). Takes effect within a few seconds.
+# The installer replaces the @-delimited word in Exec with the script's absolute path (Steam may start
+# launchers without ~/.local/bin in PATH). The script runs in Konsole so its answer is visible in VR.
+Exec=konsole -e @CTL@ toggle
+Icon=video-display
+Terminal=false
+Categories=Utility;

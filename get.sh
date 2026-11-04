@@ -8,13 +8,19 @@ set -euo pipefail
 REPO="${SF_REPO:-TBog/SteamFrame-upscale}"
 REF="${SF_REF:-main}"
 BASE_URL="${SF_BASE_URL:-https://github.com/$REPO/releases/latest/download}"
-RAW_URL="https://raw.githubusercontent.com/$REPO/$REF"
+RAW_URL="${SF_RAW_URL:-https://raw.githubusercontent.com/$REPO/$REF}"
 
 LIB_DIR="$HOME/.local/lib/openxr"
 MANIFEST_DIR="$HOME/.local/share/openxr/1/api_layers/implicit.d"
 CONFIG_DIR="$HOME/.config/steamframe-passthrough"
 LIB_NAME="libsteamframe_layer.so"
 MANIFEST_NAME="steamframe_passthrough.json"
+
+# Launcher entries for the SteamVR dashboard's "+" list (same mechanism as the other Frame apps).
+CTL_DIR="$HOME/.local/bin"
+CTL_NAME="steamframe-passthrough-ctl"
+APPS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+DESKTOP_FILES="steamframe-passthrough-toggle.desktop steamframe-passthrough-status.desktop"
 
 if [ -t 1 ]; then
   R=$'\033[31m'; G=$'\033[32m'; Y=$'\033[33m'; B=$'\033[34m'; N=$'\033[0m'
@@ -29,8 +35,10 @@ die()  { printf '%s[error]%s %s\n' "$R" "$N" "$*" >&2; exit 1; }
 case "${1:-}" in
   --uninstall|--remove)
     info "Removing SteamFrame passthrough layer"
-    rm -f "$MANIFEST_DIR/$MANIFEST_NAME" "$LIB_DIR/$LIB_NAME"
-    ok "Removed manifest and library"
+    rm -f "$MANIFEST_DIR/$MANIFEST_NAME" "$LIB_DIR/$LIB_NAME" "$CTL_DIR/$CTL_NAME"
+    for f in $DESKTOP_FILES; do rm -f "$APPS_DIR/$f"; done
+    command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$APPS_DIR" 2>/dev/null || true
+    ok "Removed manifest, library and launchers"
     if [ -d "$CONFIG_DIR" ]; then
       warn "Config kept at $CONFIG_DIR (delete it manually if unwanted)"
     fi
@@ -76,6 +84,13 @@ if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
   SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fi
 
+# Copy a repository file (path relative to the repo root) from this checkout if we're running from
+# one, otherwise download it from the repo. Returns non-zero instead of exiting on failure.
+fetch_asset() { # repo-relative-path dest
+  if [ -n "$SRC_DIR" ] && [ -f "$SRC_DIR/$1" ]; then cp "$SRC_DIR/$1" "$2"
+  else fetch "$RAW_URL/$1" "$2"; fi
+}
+
 info "Installing library to $LIB_DIR"
 if [ -n "${SF_LIB_PATH:-}" ]; then
   cp "$SF_LIB_PATH" "$tmp/$LIB_NAME"
@@ -100,11 +115,14 @@ cat > "$MANIFEST_DIR/$MANIFEST_NAME" <<JSON
     "functions": {
       "xrNegotiateLoaderApiLayerInterface": "xrNegotiateLoaderApiLayerInterface"
     },
-    "disable_environment": "DISABLE_XR_APILAYER_STEAMFRAME_passthrough_denoise",
-    "enable_environment": "ENABLE_XR_APILAYER_STEAMFRAME_passthrough_denoise"
+    "disable_environment": "DISABLE_XR_APILAYER_STEAMFRAME_passthrough_denoise"
   }
 }
 JSON
+# No "enable_environment" here on purpose: the OpenXR loader skips an implicit layer that declares one
+# unless that variable is set in the app's environment, which nobody can do for apps launched from the
+# headset's dashboard. Set DISABLE_XR_APILAYER_STEAMFRAME_passthrough_denoise=1 to opt an app out, or
+# put "enabled = 0" in config.ini (or use the launcher) to leave frames untouched everywhere.
 
 if [ -e "$CONFIG_DIR/config.ini" ]; then
   ok "Keeping existing $CONFIG_DIR/config.ini"
@@ -117,6 +135,29 @@ else
   ok "Created $CONFIG_DIR/config.ini"
 fi
 
+install_launchers() {
+  local f
+  mkdir -p "$CTL_DIR" "$APPS_DIR" || return 1
+  fetch_asset "scripts/$CTL_NAME" "$tmp/$CTL_NAME" || return 1
+  install -m 755 "$tmp/$CTL_NAME" "$CTL_DIR/$CTL_NAME" || return 1
+  for f in $DESKTOP_FILES; do
+    fetch_asset "contrib/$f" "$tmp/$f" || return 1
+    # The launcher must name the script by absolute path: Steam may start it without ~/.local/bin in PATH.
+    sed "s|@CTL@|$CTL_DIR/$CTL_NAME|g" "$tmp/$f" > "$APPS_DIR/$f" || return 1
+    chmod 644 "$APPS_DIR/$f"
+  done
+  command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$APPS_DIR" 2>/dev/null || true
+}
+if install_launchers; then
+  ok "Launchers installed: $APPS_DIR/steamframe-passthrough-*.desktop"
+  command -v konsole >/dev/null 2>&1 \
+    || warn "konsole not found: the launchers open their report in Konsole; run $CTL_DIR/$CTL_NAME status from any terminal instead"
+else
+  warn "Could not install the launcher entries (the layer itself is installed and works without them)"
+fi
+
 ok "Layer installed and registered: $MANIFEST_DIR/$MANIFEST_NAME"
+info "It loads by itself into OpenXR apps started from now on; there is nothing to switch on."
+info "Check it from the headset: SteamVR dashboard ${G}+${N} > ${G}Passthrough Denoise: Status${N} (turn it off/on: ${G}Passthrough Denoise: On/Off${N})"
 info "Profiling: launch your OpenXR app with ${G}SF_PROFILE=1${N} to log GPU timings"
 info "Update: re-run this script. Remove: bash get.sh --uninstall"

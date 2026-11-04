@@ -1,0 +1,174 @@
+#!/usr/bin/env bash
+# steamframe-passthrough-ctl -- check on and switch the passthrough denoise layer from the headset.
+#
+#   steamframe-passthrough-ctl status    is it installed, is it loading, what did it see (recent log)
+#   steamframe-passthrough-ctl on        filter on
+#   steamframe-passthrough-ctl off       filter off: raw passthrough, no GPU work
+#   steamframe-passthrough-ctl toggle    flip it
+#
+# The SteamVR dashboard's "+" list runs these through Konsole (see contrib/*.desktop). The layer
+# lives inside whichever OpenXR app is running, so there is no process to start or stop: "on"/"off"
+# just edit `enabled` in config.ini, which the layer re-reads every couple of seconds while an app
+# is using passthrough. Pass --no-wait to skip the "press Enter / closes itself" pause at the end.
+set -u
+
+config="${SF_CONFIG:-$HOME/.config/steamframe-passthrough/config.ini}"
+log="${SF_LOG:-${XDG_CACHE_HOME:-$HOME/.cache}/steamframe-passthrough/layer.log}"
+lib="$HOME/.local/lib/openxr/libsteamframe_layer.so"
+manifest="$HOME/.local/share/openxr/1/api_layers/implicit.d/steamframe_passthrough.json"
+
+usage() { sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'; }
+
+cmd=""
+wait_pause=1
+for arg in "$@"; do
+    case "$arg" in
+        status | on | off | toggle) cmd="$arg" ;;
+        --no-wait) wait_pause=0 ;;
+        -h | --help) usage; exit 0 ;;
+        *) echo "Unknown argument: $arg" >&2; usage >&2; exit 2 ;;
+    esac
+done
+[ -n "$cmd" ] || { usage >&2; exit 2; }
+
+# Print the value of KEY from config.ini (the layer's own relaxed parsing: skip ;/# lines, split on
+# the first '='), or nothing when it isn't there.
+config_value() { # key
+    [ -f "$config" ] || return 0
+    awk -F= -v k="$1" '
+        /^[[:space:]]*[;#]/ { next }
+        index($0, "=") == 0 { next }
+        { key = $1; sub(/^[[:space:]]+/, "", key); sub(/[[:space:]]+$/, "", key)
+          if (key == k) { v = substr($0, index($0, "=") + 1); sub(/^[[:space:]]+/, "", v); sub(/[[:space:]]+$/, "", v); val = v } }
+        END { if (val != "") print val }' "$config"
+}
+
+# True when the filter is on. A missing file or key means on (the layer's own default), and so does a
+# value the layer can't parse as a number (it ignores those and keeps its default); otherwise the
+# layer's own `enabled < 0.5` means off.
+filter_is_on() {
+    local v
+    v="$(config_value enabled)"
+    printf '%s' "$v" | grep -Eq '^[+-]?([0-9]|\.[0-9])' || return 0
+    awk -v v="$v" 'BEGIN { exit !(v + 0 >= 0.5) }'
+}
+
+# Set `enabled` to $1 (0 or 1) in config.ini, keeping every other line (comments, other keys) as it
+# was. The write goes to a temporary file and is renamed over the original, so the layer never reads
+# a half-written file.
+set_enabled() { # 0|1
+    mkdir -p "$(dirname "$config")" || return 1
+    if [ ! -f "$config" ]; then
+        printf '; Passthrough denoise settings\n[passthrough]\nenabled = %s\n' "$1" > "$config"
+        return
+    fi
+    local tmp="$config.tmp.$$"
+    # Two passes over the same file: the first only notes whether an `enabled` line exists, so the
+    # second can replace it where it is (dropping any duplicates) or, when there is none, add one
+    # right after the [passthrough] header (or at the end if there is no header).
+    awk -v v="$1" '
+        NR == FNR { if ($0 ~ /^[[:space:]]*enabled[[:space:]]*=/) has = 1; next }
+        /^[[:space:]]*[;#]/ { print; next }
+        /^[[:space:]]*enabled[[:space:]]*=/ { if (!done) { print "enabled = " v; done = 1 }; next }
+        { print }
+        !has && !done && /^\[passthrough\][[:space:]]*$/ { print "enabled = " v; done = 1 }
+        END { if (!done) print "enabled = " v }' "$config" "$config" > "$tmp" && mv "$tmp" "$config"
+}
+
+pause_before_close() { # seconds
+    [ "$wait_pause" = 1 ] && [ -t 0 ] && [ -t 1 ] || return 0
+    printf '\n(This window closes itself in %s seconds; Enter closes it now.)' "$1"
+    read -r -t "$1" _ || true
+    echo
+}
+
+show_state() {
+    if filter_is_on; then
+        echo "Passthrough denoise filter: ON"
+    else
+        echo "Passthrough denoise filter: OFF (raw passthrough)"
+    fi
+}
+
+# The value of KEY, or "default" when config.ini doesn't set it (the layer then uses its built-in one).
+value_or_default() { # key
+    local v
+    v="$(config_value "$1")"
+    printf '%s' "${v:-default}"
+}
+
+do_status() {
+    show_state
+    echo
+    if [ -f "$lib" ]; then
+        printf '  [ok]  layer library  %s\n' "$lib"
+    else
+        printf '  [!!]  layer library  MISSING: %s\n' "$lib"
+    fi
+    if [ -f "$manifest" ]; then
+        printf '  [ok]  layer manifest %s\n' "$manifest"
+        if grep -q '"enable_environment"' "$manifest" 2>/dev/null; then
+            echo "  [!!]  this manifest still has \"enable_environment\": the loader then skips the layer unless"
+            echo "        ENABLE_XR_APILAYER_STEAMFRAME_passthrough_denoise is set in the app's environment."
+            echo "        Re-run the installer (it rewrites the manifest without it)."
+        fi
+    else
+        printf '  [!!]  layer manifest MISSING: %s\n' "$manifest"
+    fi
+    if [ -f "$config" ]; then
+        printf '  [ok]  settings       %s\n' "$config"
+        printf '        temporal_alpha=%s motion_threshold=%s sharpness_weight=%s noise_floor=%s\n' \
+            "$(value_or_default temporal_alpha)" "$(value_or_default motion_threshold)" \
+            "$(value_or_default sharpness_weight)" "$(value_or_default noise_floor)"
+    else
+        printf '  [..]  settings       no %s yet (the layer uses its built-in defaults)\n' "$config"
+    fi
+
+    echo
+    printf 'Layer log: %s\n' "$log"
+    if [ ! -s "$log" ]; then
+        echo "  (empty) The layer has not been loaded by any OpenXR app since it was installed."
+        echo "  Start a VR app that uses passthrough, then open Status again."
+        return 0
+    fi
+    tail -n 14 "$log" | sed 's/^/  /'
+    echo
+    local recent
+    recent="$(tail -n 200 "$log")"
+    if printf '%s\n' "$recent" | grep -q 'filtering frames'; then
+        echo "Result: working. The layer is filtering at least one swapchain."
+    elif printf '%s\n' "$recent" | grep -q 'bypassed (enabled = 0)'; then
+        echo "Result: loaded and ready, but the filter is switched OFF (enabled = 0)."
+    elif printf '%s\n' "$recent" | grep -q ': processing'; then
+        echo "Result: a swapchain it can process was found, but no frame has been processed yet."
+    elif printf '%s\n' "$recent" | grep -q 'session setup failed'; then
+        echo "Result: loaded, but the GPU setup failed (see the 'session setup failed' line above)."
+    elif printf '%s\n' "$recent" | grep -q 'swapchain .*format='; then
+        echo "Result: loaded, but none of the app's swapchains is R8_UNORM, the only format it filters."
+        echo "        The 'swapchain ... format=' lines above show what the app actually creates."
+    else
+        echo "Result: loaded, but no swapchain has been created yet."
+    fi
+}
+
+case "$cmd" in
+    status)
+        do_status
+        pause_before_close 60
+        ;;
+    on | off | toggle)
+        case "$cmd" in
+            on) want=1 ;;
+            off) want=0 ;;
+            toggle) if filter_is_on; then want=0; else want=1; fi ;;
+        esac
+        if ! set_enabled "$want"; then
+            echo "Could not write $config" >&2
+            pause_before_close 8
+            exit 1
+        fi
+        show_state
+        echo "Applies within a few seconds, while a VR app is using passthrough."
+        pause_before_close 8
+        ;;
+esac

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Passthrough Denoise: Status
+Comment=Show whether the passthrough denoise layer is installed, loaded and filtering, with its recent log.
+# The installer replaces the @-delimited word in Exec with the script's absolute path (Steam may start
+# launchers without ~/.local/bin in PATH). The script runs in Konsole so its report is visible in VR.
+Exec=konsole -e @CTL@ status
+Icon=video-display
+Terminal=false
+Categories=Utility;

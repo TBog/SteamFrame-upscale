@@ -12,10 +12,15 @@
 // poll boundary, checking that per-pixel variance stops dropping, i.e. that the bypass fast path
 // in hReleaseSwapchainImage is actually skipping the compute dispatch on the GPU.
 //
-// Needs XR_RUNTIME_JSON pointing at the stub runtime's manifest, XR_API_LAYER_PATH /
-// XR_ENABLE_API_LAYERS pointing at the built layer, and SF_CONFIG pointing at a writable (need not
-// yet exist) path for phase 2; `ctest` wires all three up (see CMakeLists.txt). If no Vulkan
-// device is present, or it lacks shaderStorageImageExtendedFormats (the same requirement
+// Finally it reads the layer's diagnostic log (SF_LOG) and checks that it recorded what just
+// happened -- loaded, session ready, swapchain processing, filtering, config reloaded, bypassed --
+// since that log is the only way to tell what the layer is doing once it is installed on a headset.
+//
+// Needs XR_RUNTIME_JSON pointing at the stub runtime's manifest, the layer made visible to the loader
+// (either XR_API_LAYER_PATH + XR_ENABLE_API_LAYERS, or an installed implicit manifest found through
+// XDG_DATA_HOME -- ctest runs both, see CMakeLists.txt), and SF_CONFIG / SF_LOG pointing at writable
+// (need not exist) paths; both are deleted at startup so every run starts from a clean slate. If no
+// Vulkan device is present, or it lacks shaderStorageImageExtendedFormats (the same requirement
 // src/layer.cpp itself checks), the test is skipped (exit 77) rather than failed -- that is an
 // environment limitation, not a layer bug. See tests/integration/README.md.
 #include <vulkan/vulkan.h>
@@ -27,7 +32,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <iterator>
 #include <random>
+#include <string>
 #include <vector>
 
 namespace {
@@ -212,6 +219,15 @@ int main() {
     void* stagingPtr = nullptr;
     vkMapMemory(dev, stagingMem, 0, VK_WHOLE_SIZE, 0, &stagingPtr);
 
+    // Start from a clean slate: phase 2 leaves `enabled = 0` behind, which would make the next run's
+    // phase 1 start out bypassed, and a stale log could satisfy the checks at the end by itself.
+    const char* cfgPath = std::getenv("SF_CONFIG");
+    if (!cfgPath) fail("SF_CONFIG must be set (the bypass phase edits it; see tests/integration/README.md)");
+    const char* logPath = std::getenv("SF_LOG");
+    if (!logPath) fail("SF_LOG must be set (the layer's log is checked at the end; see tests/integration/README.md)");
+    std::remove(cfgPath);
+    std::remove(logPath);
+
     XrInstance xri{};
     // Deliberately NOT setting enabledApiLayerNames here: this app doesn't know about the layer,
     // matching how a real VR game would be unaware of it too. The layer is activated purely via
@@ -322,8 +338,6 @@ int main() {
     // pick it up, then confirm the compute pass is actually being skipped -- not just that the
     // "enabled" config key parses, but that the real Vulkan fast path in hReleaseSwapchainImage
     // takes effect.
-    const char* cfgPath = std::getenv("SF_CONFIG");
-    if (!cfgPath) fail("SF_CONFIG must be set so this phase can hot-reload enabled=0 (see tests/integration/README.md)");
     {
         std::ofstream(cfgPath) << "[passthrough]\nenabled = 0\n";
         double inVar2 = 0, outVar2 = 0;
@@ -333,6 +347,29 @@ int main() {
                     outVar2 / samples2, samples2);
         if (!(outVar2 > inVar2 * 0.9))
             fail("output variance dropped even with enabled=0 -- the bypass fast path does not appear to be skipping the compute pass");
+    }
+
+    // The layer's log must show the whole story, in the words scripts/steamframe-passthrough-ctl
+    // keys its "Result:" line on (so changing a message there means changing the script too).
+    // The "GPU time over the first 300 frames" line is not checked: this run processes fewer.
+    {
+        std::ifstream in(logPath);
+        const std::string log((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        bool complete = true;
+        for (const char* expected :
+             {"layer loaded into this OpenXR app", "session created: Vulkan compute path ready",
+              "format=9(R8_UNORM)", ": processing", "images ready", "filtering frames", "config reloaded:",
+              "bypassed (enabled = 0)"}) {
+            if (log.find(expected) == std::string::npos) {
+                std::fprintf(stderr, "FAIL: layer log is missing \"%s\"\n", expected);
+                complete = false;
+            }
+        }
+        if (!complete) {
+            std::fprintf(stderr, "--- %s ---\n%s--- end of log ---\n", logPath, log.c_str());
+            std::exit(1);
+        }
+        std::printf("layer log OK (%zu bytes)\n", log.size());
     }
 
     xrDestroySwapchain(swapchain);

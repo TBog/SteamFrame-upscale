@@ -14,6 +14,26 @@ Fetches a prebuilt `x86_64`/`aarch64` binary from the latest GitHub release (bui
 source -- see "Build from source" below -- then run `cmake --install build`, which does the same
 user-local install as `get.sh`.
 
+### After installing
+
+The layer is not a program you start: the OpenXR loader loads it into every OpenXR app that starts
+after the install, and it filters any `R8_UNORM` Vulkan swapchain it finds (the monochrome
+passthrough stream). Nothing to enable, but **apps that were already running need a restart**.
+
+The installer adds two entries to the SteamVR dashboard's **+** list (like the other Frame apps; they
+open a small Konsole window):
+
+- **Passthrough Denoise: Status** -- is it installed, did any app load it, what swapchains did it see,
+  and is it filtering. This is the first thing to check if it seems to do nothing: an empty log means
+  no OpenXR app has loaded it yet; "none of the app's swapchains is R8_UNORM" means it loads but the
+  passthrough isn't a swapchain it can touch.
+- **Passthrough Denoise: On/Off** -- switch the filter off for raw passthrough, and back on.
+
+The same from a terminal: `~/.local/bin/steamframe-passthrough-ctl status|on|off|toggle`. The layer
+writes what it does to `~/.cache/steamframe-passthrough/layer.log`. To keep one app from loading it,
+start that app with `DISABLE_XR_APILAYER_STEAMFRAME_passthrough_denoise=1`. Tunables live in
+`~/.config/steamframe-passthrough/config.ini` (live-reloaded; see `SETUP.md`).
+
 ## Passthrough denoise
 - `include/denoise.hpp`: reference pipeline (motion-masked temporal accumulation + contrast-adaptive sharpening, per-eye ping-pong history) and `config.ini` loader.
 - `shaders/denoise_cas.comp`: GLSL compute port (two passes with a barrier between them).
