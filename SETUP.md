@@ -194,6 +194,14 @@ passthrough swapchain uses another format, nothing is denoised: check with
 from `xrEnumerateSwapchainFormats`. A `swapchain resource allocation failed` message means the
 format lacks `STORAGE_IMAGE` support on your GPU.
 
+### Turning it off when the headset's UI isn't usable
+
+See "If something goes wrong" in the repo `README.md`: `steamframe-passthrough-ctl off | disable |
+uninstall`, all runnable over SSH from a PC, plus the one-line manual `rm` of the manifest and the
+per-app `DISABLE_XR_APILAYER_STEAMFRAME_passthrough_denoise=1` opt-out. Note the difference: `off`
+only skips the GPU pass (the layer stays loaded, still hooks swapchain creation and sets up Vulkan
+resources), while `disable` removes the layer from the loader's view entirely.
+
 ### Installed, but it seems to do nothing: read the layer log first
 
 The layer appends what it does to `~/.cache/steamframe-passthrough/layer.log` (or `$SF_LOG`), and

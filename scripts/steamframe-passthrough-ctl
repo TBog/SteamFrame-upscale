@@ -1,29 +1,40 @@
 #!/usr/bin/env bash
 # steamframe-passthrough-ctl -- check on and switch the passthrough denoise layer from the headset.
 #
-#   steamframe-passthrough-ctl status    is it installed, is it loading, what did it see (recent log)
-#   steamframe-passthrough-ctl on        filter on
-#   steamframe-passthrough-ctl off       filter off: raw passthrough, no GPU work
-#   steamframe-passthrough-ctl toggle    flip it
+#   steamframe-passthrough-ctl status     is it installed, is it loading, what did it see (recent log)
+#   steamframe-passthrough-ctl on         filter on
+#   steamframe-passthrough-ctl off        filter off: raw passthrough, no GPU work (layer stays loaded)
+#   steamframe-passthrough-ctl toggle     flip it
+#   steamframe-passthrough-ctl disable    stop apps from loading the layer at all (reversible)
+#   steamframe-passthrough-ctl enable     undo "disable"
+#   steamframe-passthrough-ctl uninstall  remove the layer and these launchers (works offline; keeps settings)
 #
-# The SteamVR dashboard's "+" list runs these through Konsole (see contrib/*.desktop). The layer
-# lives inside whichever OpenXR app is running, so there is no process to start or stop: "on"/"off"
-# just edit `enabled` in config.ini, which the layer re-reads every couple of seconds while an app
-# is using passthrough. Pass --no-wait to skip the "press Enter / closes itself" pause at the end.
+# The SteamVR dashboard's "+" list runs status/toggle through Konsole (see contrib/*.desktop). The
+# layer lives inside whichever OpenXR app is running, so there is no process to start or stop:
+# "on"/"off" just edit `enabled` in config.ini, which the layer re-reads every couple of seconds
+# while an app is using passthrough. That only bypasses the GPU work; "disable"/"uninstall" are for
+# when the layer itself is the problem, and work the same over SSH with no headset UI at all (an
+# app has to be restarted to drop a layer it already loaded). Pass --no-wait to skip the "press
+# Enter / closes itself" pause at the end of status/on/off/toggle.
 set -u
 
 config="${SF_CONFIG:-$HOME/.config/steamframe-passthrough/config.ini}"
 log="${SF_LOG:-${XDG_CACHE_HOME:-$HOME/.cache}/steamframe-passthrough/layer.log}"
 lib="$HOME/.local/lib/openxr/libsteamframe_layer.so"
 manifest="$HOME/.local/share/openxr/1/api_layers/implicit.d/steamframe_passthrough.json"
+disabled_manifest="$manifest.disabled"
+# Where get.sh / cmake --install put the rest (uninstall removes exactly these).
+ctl_installed="$HOME/.local/bin/steamframe-passthrough-ctl"
+apps_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+desktop_files="steamframe-passthrough-toggle.desktop steamframe-passthrough-status.desktop"
 
-usage() { sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; }
 
 cmd=""
 wait_pause=1
 for arg in "$@"; do
     case "$arg" in
-        status | on | off | toggle) cmd="$arg" ;;
+        status | on | off | toggle | disable | enable | uninstall) cmd="$arg" ;;
         --no-wait) wait_pause=0 ;;
         -h | --help) usage; exit 0 ;;
         *) echo "Unknown argument: $arg" >&2; usage >&2; exit 2 ;;
@@ -112,6 +123,8 @@ do_status() {
             echo "        ENABLE_XR_APILAYER_STEAMFRAME_passthrough_denoise is set in the app's environment."
             echo "        Re-run the installer (it rewrites the manifest without it)."
         fi
+    elif [ -f "$disabled_manifest" ]; then
+        printf '  [!!]  layer DISABLED (apps started now do not load it): %s\n' "$disabled_manifest"
     else
         printf '  [!!]  layer manifest MISSING: %s\n' "$manifest"
     fi
@@ -122,6 +135,13 @@ do_status() {
             "$(value_or_default sharpness_weight)" "$(value_or_default noise_floor)"
     else
         printf '  [..]  settings       no %s yet (the layer uses its built-in defaults)\n' "$config"
+    fi
+
+    if [ ! -f "$manifest" ] && [ -f "$disabled_manifest" ]; then
+        echo
+        echo "Result: the layer is DISABLED. Run  steamframe-passthrough-ctl enable  to turn it back on"
+        echo "        (then restart the VR app)."
+        return 0
     fi
 
     echo
@@ -151,7 +171,55 @@ do_status() {
     fi
 }
 
+# Stop the loader from finding the layer by renaming its manifest: apps started from now on don't
+# load it (one that already did keeps it until restarted). Nothing is deleted, so "enable" restores
+# it exactly. This is the switch for when the layer itself is the problem; "off" only skips the GPU
+# work and the layer stays loaded.
+do_disable() {
+    if [ -f "$manifest" ]; then
+        mv -f "$manifest" "$disabled_manifest" || { echo "Could not rename $manifest" >&2; return 1; }
+        echo "Layer DISABLED: apps started from now on will not load it."
+        echo "Apps that are already running keep it until you restart them."
+        echo "Undo with: steamframe-passthrough-ctl enable"
+    elif [ -f "$disabled_manifest" ]; then
+        echo "The layer is already disabled (steamframe-passthrough-ctl enable undoes it)."
+    else
+        echo "The layer is not installed (no $manifest)." >&2
+        return 1
+    fi
+}
+
+do_enable() {
+    if [ -f "$disabled_manifest" ]; then
+        mv -f "$disabled_manifest" "$manifest" || { echo "Could not rename $disabled_manifest" >&2; return 1; }
+        echo "Layer enabled: apps started from now on will load it."
+    elif [ -f "$manifest" ]; then
+        echo "The layer is already enabled."
+    else
+        echo "The layer is not installed (no $manifest); run the installer first." >&2
+        return 1
+    fi
+}
+
+# Remove everything the installer put in place, without needing the network (get.sh --uninstall does
+# the same but is fetched with curl). Settings and the log are kept, like get.sh does.
+do_uninstall() {
+    local f
+    rm -f "$manifest" "$disabled_manifest" "$lib"
+    for f in $desktop_files; do rm -f "$apps_dir/$f"; done
+    command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$apps_dir" 2>/dev/null
+    echo "Removed the layer, its manifest and the launchers."
+    echo "Kept your settings ($config) and the log."
+    echo "Apps that are already running keep the layer until you restart them."
+    # This script goes last. bash already has it open, so deleting it while it runs is safe.
+    rm -f "$ctl_installed"
+    return 0
+}
+
 case "$cmd" in
+    disable) do_disable; exit $? ;;
+    enable) do_enable; exit $? ;;
+    uninstall) do_uninstall; exit $? ;;
     status)
         do_status
         pause_before_close 60

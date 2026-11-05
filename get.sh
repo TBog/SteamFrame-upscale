@@ -35,7 +35,7 @@ die()  { printf '%s[error]%s %s\n' "$R" "$N" "$*" >&2; exit 1; }
 case "${1:-}" in
   --uninstall|--remove)
     info "Removing SteamFrame passthrough layer"
-    rm -f "$MANIFEST_DIR/$MANIFEST_NAME" "$LIB_DIR/$LIB_NAME" "$CTL_DIR/$CTL_NAME"
+    rm -f "$MANIFEST_DIR/$MANIFEST_NAME" "$MANIFEST_DIR/$MANIFEST_NAME.disabled" "$LIB_DIR/$LIB_NAME" "$CTL_DIR/$CTL_NAME"
     for f in $DESKTOP_FILES; do rm -f "$APPS_DIR/$f"; done
     command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$APPS_DIR" 2>/dev/null || true
     ok "Removed manifest, library and launchers"
@@ -123,6 +123,8 @@ JSON
 # unless that variable is set in the app's environment, which nobody can do for apps launched from the
 # headset's dashboard. Set DISABLE_XR_APILAYER_STEAMFRAME_passthrough_denoise=1 to opt an app out, or
 # put "enabled = 0" in config.ini (or use the launcher) to leave frames untouched everywhere.
+# Installing again replaces a manifest that `steamframe-passthrough-ctl disable` renamed to .disabled.
+rm -f "$MANIFEST_DIR/$MANIFEST_NAME.disabled"
 
 if [ -e "$CONFIG_DIR/config.ini" ]; then
   ok "Keeping existing $CONFIG_DIR/config.ini"
@@ -161,3 +163,4 @@ info "It loads by itself into OpenXR apps started from now on; there is nothing 
 info "Check it from the headset: SteamVR dashboard ${G}+${N} > ${G}Passthrough Denoise: Status${N} (turn it off/on: ${G}Passthrough Denoise: On/Off${N})"
 info "Profiling: launch your OpenXR app with ${G}SF_PROFILE=1${N} to log GPU timings"
 info "Update: re-run this script. Remove: bash get.sh --uninstall"
+info "If something goes wrong (also works over SSH, no headset UI needed): ${G}$CTL_DIR/$CTL_NAME disable${N}  (undo: enable; remove everything: uninstall)"

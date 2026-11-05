@@ -21,7 +21,7 @@ sudo apt install libvulkan-dev libopenxr-dev glslang-tools   # Debian/Ubuntu
 # or: sudo pacman -S --needed base-devel cmake vulkan-headers vulkan-icd-loader openxr glslang  # Arch
 
 cmake -B build && cmake --build build -j
-ctest --test-dir build --output-on-failure      # pipeline (CPU), ctl (launcher script), layer_smoke, layer_smoke_implicit
+ctest --test-dir build --output-on-failure      # pipeline (CPU), ctl, installer, layer_smoke, layer_smoke_implicit
 build/test_pipeline                              # run the CPU test binary directly (more verbose output)
 ```
 
@@ -34,7 +34,9 @@ sharpening, ghosting, per-eye independence, teardown cycles, CPU timing) — com
 locally if iterating on one. `ctest -R layer_smoke` isolates the two integration tests (explicit
 activation, and `layer_smoke_implicit` for an installed-style manifest); they're skipped (not failed)
 with CTest exit code 77 on a machine with no usable Vulkan device — see `tests/integration/README.md`.
-`ctest -R ctl` runs `tests/ctl_test.sh` (bash only; no GPU) against a throwaway `HOME`.
+`ctest -R ctl` runs `tests/ctl_test.sh` and `ctest -R installer` runs `tests/installer_test.sh` (bash
+only; no GPU, no network) against throwaway `HOME`s; `installer` is skipped (77) without `libvulkan.so.1`
+because `get.sh` itself refuses to run then.
 
 Working on Windows with the full build in WSL: with `core.autocrlf=true` the Windows checkout can hold
 CRLF copies of the shell scripts, which bash rejects. `.gitattributes` pins `*.sh`, `get.sh`,
@@ -167,6 +169,19 @@ install, only that it builds and its ini-parsing logic was unit-verified standal
   without `~/.local/bin` in `PATH`). Unverified on a real Frame: that the `+` list launches
   `konsole -e ...` the way it launches the siblings' binaries. `get.sh` installs them non-fatally
   (the layer works without them).
+- **Recovery without the headset UI** (README "If something goes wrong"): the layer loads into every
+  OpenXR app, so a bug in it can leave no usable UI, and every way to turn it off must work over SSH.
+  Four levels, weakest to strongest: `enabled = 0` (`ctl off`; skips the GPU pass only — the layer
+  still loads, hooks swapchain creation and builds Vulkan resources, so it can't help with a load- or
+  setup-time bug), `ctl disable`/`enable` (renames the manifest to `.disabled` so the loader no
+  longer sees it; reversible), `ctl uninstall` (offline removal, keeps `config.ini` and the log), and
+  `get.sh --uninstall` (the same removal, fetched with curl). **`ctl uninstall` and `get.sh
+  --uninstall` are two implementations of the same removal and must be kept in step** — change what
+  the installer places and you change both; `ctest`'s `installer` test fails if they leave different
+  files behind. `get.sh` also clears/supersedes a `.disabled` manifest, and `disable`/`enable`/
+  `uninstall` never pause for Enter (so they work in scripts and `ssh host 'cmd'`). The SSH route
+  (`steamos@<headset-ip>`, Developer Mode + a password) is as the sibling repos document it and is
+  unverified by us on a real Frame.
 - **Layer log** (`logLine()` in `src/layer.cpp`, default `~/.cache/steamframe-passthrough/layer.log`,
   override `SF_LOG`): one line per notable event (loaded, config, session ready/failed with reason,
   each swapchain with its numeric format and why it is/isn't processed, filter on/off, first GPU

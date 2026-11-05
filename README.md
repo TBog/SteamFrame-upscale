@@ -30,9 +30,45 @@ open a small Konsole window):
 - **Passthrough Denoise: On/Off** -- switch the filter off for raw passthrough, and back on.
 
 The same from a terminal: `~/.local/bin/steamframe-passthrough-ctl status|on|off|toggle`. The layer
-writes what it does to `~/.cache/steamframe-passthrough/layer.log`. To keep one app from loading it,
-start that app with `DISABLE_XR_APILAYER_STEAMFRAME_passthrough_denoise=1`. Tunables live in
+writes what it does to `~/.cache/steamframe-passthrough/layer.log`. Tunables live in
 `~/.config/steamframe-passthrough/config.ini` (live-reloaded; see `SETUP.md`).
+
+### If something goes wrong (even if you can't see any UI)
+
+The layer is loaded into every VR app, so a bug in it can mean a garbled or black view, or an app
+that won't start, with no way to reach the `+` list. Each step below works without the headset UI.
+Try them in order:
+
+1. **Raw passthrough:** `~/.local/bin/steamframe-passthrough-ctl off` (or the *On/Off* entry in the
+   `+` list). This only skips the GPU work; the layer stays loaded, so it won't help if loading or
+   setting up the layer is what breaks.
+2. **Stop apps loading it at all (reversible):** `steamframe-passthrough-ctl disable`. Apps started
+   afterwards don't load the layer; restart the affected app. `enable` undoes it.
+3. **Remove it** (works offline, keeps your settings): `steamframe-passthrough-ctl uninstall`.
+   If that script is missing or broken, and the headset is online:
+   `curl -fsSL https://tbog.github.io/SteamFrame-upscale/get.sh | bash -s -- --uninstall`.
+4. **By hand, with none of our tools:**
+   `rm -f ~/.local/share/openxr/1/api_layers/implicit.d/steamframe_passthrough.json`
+5. **One app only:** give that app the Steam launch option
+   `DISABLE_XR_APILAYER_STEAMFRAME_passthrough_denoise=1 %command%`.
+
+**From a PC** (when the headset view is unusable): run any of the commands above through SSH, e.g.
+
+```sh
+ssh steamos@<headset-ip> '~/.local/bin/steamframe-passthrough-ctl disable'
+ssh steamos@<headset-ip> '~/.local/bin/steamframe-passthrough-ctl uninstall'
+ssh steamos@<headset-ip> 'rm -f ~/.local/share/openxr/1/api_layers/implicit.d/steamframe_passthrough.json'
+```
+
+Windows 10/11 have an `ssh` client in PowerShell. If an app is still misbehaving, restart it, or
+restart SteamVR with `ssh steamos@<headset-ip> 'systemctl --user restart steamvr.service'`.
+
+**Set SSH up now, not after something breaks.** On the headset: Settings > System > Developer Mode,
+then set a password under Developer (the other Frame apps document the same steps and the
+`steamos@<headset-ip>` login; the headset's IP address is in your router's list of connected
+devices). Developer Mode also makes Konsole appear in the `+` list. Choose a strong password: with
+SSH on, anyone on your network who knows it can log in to the headset. I have not been able to try
+these steps on a real Frame, so check that `ssh` works while everything still does.
 
 ## Passthrough denoise
 - `include/denoise.hpp`: reference pipeline (motion-masked temporal accumulation + contrast-adaptive sharpening, per-eye ping-pong history) and `config.ini` loader.

@@ -13,6 +13,10 @@ find_program(SF_BASH bash)
 if(SF_BASH)
   add_test(NAME ctl COMMAND ${SF_BASH} ${CMAKE_SOURCE_DIR}/tests/ctl_test.sh
            ${CMAKE_SOURCE_DIR}/scripts/steamframe-passthrough-ctl)
+  # get.sh install/uninstall against a throwaway HOME, plus ctl uninstall == get.sh --uninstall.
+  # Skipped (77) where libvulkan.so.1 is absent, since get.sh itself refuses to run without it.
+  add_test(NAME installer COMMAND ${SF_BASH} ${CMAKE_SOURCE_DIR}/tests/installer_test.sh ${CMAKE_SOURCE_DIR})
+  set_tests_properties(installer PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 
 # OpenXR API layer (needs Vulkan + OpenXR dev packages and glslangValidator:

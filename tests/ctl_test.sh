@@ -14,7 +14,7 @@ log="$home/.cache/steamframe-passthrough/layer.log"
 manifest="$home/.local/share/openxr/1/api_layers/implicit.d/steamframe_passthrough.json"
 
 # Run the script against the throwaway HOME, with none of the variables that would redirect it.
-ctl() { env -u SF_CONFIG -u SF_LOG -u XDG_CACHE_HOME HOME="$home" bash "$ctl_script" "$@" --no-wait; }
+ctl() { env -u SF_CONFIG -u SF_LOG -u XDG_CACHE_HOME -u XDG_DATA_HOME HOME="$home" bash "$ctl_script" "$@" --no-wait; }
 
 check() { # description, command...
     local what="$1"
@@ -133,6 +133,68 @@ reset
 mkdir -p "$(dirname "$manifest")"
 printf '%s\n' '{ "api_layer": { "enable_environment": "ENABLE_X" } }' >"$manifest"
 check "a manifest with enable_environment is flagged" contains "$(ctl status)" "still has \"enable_environment\""
+
+# --- disable / enable: the reversible "stop loading the layer at all" ---------------------------
+reset
+mkdir -p "$(dirname "$manifest")"
+printf '%s\n' '{ "api_layer": { "name": "x" } }' >"$manifest"
+ctl disable >/dev/null
+check "disable moves the manifest out of the loader's sight" test ! -e "$manifest" -a -e "$manifest.disabled"
+out="$(ctl status)"
+check "status flags a disabled layer" contains "$out" "layer DISABLED"
+check "status gives a disabled verdict, not a log verdict" contains "$out" "Result: the layer is DISABLED"
+ctl disable >/dev/null 2>&1
+check "disable twice is harmless" test "$?" = 0
+ctl enable >/dev/null
+check "enable restores the manifest byte for byte" test "$(cat "$manifest")" = '{ "api_layer": { "name": "x" } }'
+check "enable leaves no .disabled copy behind" test ! -e "$manifest.disabled"
+ctl enable >/dev/null 2>&1
+check "enable twice is harmless" test "$?" = 0
+reset
+ctl disable >/dev/null 2>&1
+check "disable with nothing installed fails (exit 1)" test "$?" = 1
+ctl enable >/dev/null 2>&1
+check "enable with nothing installed fails (exit 1)" test "$?" = 1
+
+# --- uninstall: offline removal of exactly what the installer put in place ---------------------
+install_fake() { # lays out what get.sh installs, using the real script as the installed copy
+    reset
+    mkdir -p "$home/.local/lib/openxr" "$home/.local/bin" "$home/.local/share/applications" \
+        "$(dirname "$manifest")" "$(dirname "$config")" "$(dirname "$log")"
+    : >"$home/.local/lib/openxr/libsteamframe_layer.so"
+    printf '{}\n' >"$manifest"
+    cp "$ctl_script" "$home/.local/bin/steamframe-passthrough-ctl"
+    : >"$home/.local/share/applications/steamframe-passthrough-toggle.desktop"
+    : >"$home/.local/share/applications/steamframe-passthrough-status.desktop"
+    : >"$home/.local/share/applications/someone-elses-app.desktop"
+    printf '[passthrough]\nenabled = 1\n' >"$config"
+    printf 'a log line\n' >"$log"
+}
+installed_ctl() { env -u SF_CONFIG -u SF_LOG -u XDG_CACHE_HOME -u XDG_DATA_HOME HOME="$home" \
+    bash "$home/.local/bin/steamframe-passthrough-ctl" "$@"; }
+
+install_fake
+installed_ctl uninstall >/dev/null
+check "uninstall removes the library" test ! -e "$home/.local/lib/openxr/libsteamframe_layer.so"
+check "uninstall removes the manifest" test ! -e "$manifest"
+check "uninstall removes both launchers" test ! -e "$home/.local/share/applications/steamframe-passthrough-toggle.desktop" \
+    -a ! -e "$home/.local/share/applications/steamframe-passthrough-status.desktop"
+check "uninstall removes the installed script itself" test ! -e "$home/.local/bin/steamframe-passthrough-ctl"
+check "uninstall keeps the user's settings" grep -qx 'enabled = 1' "$config"
+check "uninstall keeps the log" test -s "$log"
+check "uninstall leaves other apps' launchers alone" test -e "$home/.local/share/applications/someone-elses-app.desktop"
+
+install_fake
+installed_ctl disable >/dev/null
+installed_ctl uninstall >/dev/null
+check "uninstall also removes a disabled manifest" test ! -e "$manifest.disabled" -a ! -e "$manifest"
+
+install_fake
+ctl uninstall >/dev/null   # the script under test is a different file than the installed copy
+check "uninstall run from another copy removes the installed one" test ! -e "$home/.local/bin/steamframe-passthrough-ctl"
+check "...but never deletes the copy it is running from" test -f "$ctl_script"
+ctl uninstall >/dev/null 2>&1
+check "uninstall twice is harmless" test "$?" = 0
 
 # --- argument handling --------------------------------------------------------------------------
 check "an unknown argument exits 2" bash -c "env HOME='$home' bash '$ctl_script' bogus >/dev/null 2>&1; test \$? = 2"
